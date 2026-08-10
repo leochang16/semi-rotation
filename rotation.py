@@ -15,8 +15,6 @@ SECTORS = {
     "算力晶片":      ["NVDA", "AMD", "AVGO", "MRVL"],
     "晶圓代工/封測": ["TSM", "INTC", "GFS", "UMC", "AMKR", "ASX"],
     "半導體設備":    ["AMAT", "LRCX", "KLAC", "ASML", "TER", "ONTO", "ACMR", "CAMT"],
-    "材料/零組件":   ["ENTG", "MKSI", "UCTT", "ICHR"],
-    "EDA/IP":        ["SNPS", "CDNS", "ARM"],
     "記憶體/儲存":   ["MU", "SNDK", "WDC", "STX", "SIMO"],
     "光通訊/CPO":    ["COHR", "LITE", "AAOI", "FN", "POET", "AXTI"],
     "高速互連/網通": ["ANET", "CRDO", "ALAB", "CIEN", "CSCO", "NOK"],
@@ -49,12 +47,12 @@ STACK = {
     "算力晶片":      (3, "晶片 / 元件"),
     "記憶體/儲存":   (3, "晶片 / 元件"),
     "類比/功率/被動":(3, "晶片 / 元件"),
-    "EDA/IP":        (4, "設計工具 / IP"),
     "晶圓代工/封測": (5, "代工 / 封測"),
     "半導體設備":    (6, "設備"),
-    "材料/零組件":   (7, "材料 / 基板"),
 }
-BENCH = ["SMH", "SPY"]
+CATEGORY = {**{k: "半導體" for k in SECTORS}, **{k: "其他 AI" for k in OUTER}}
+ALL_GROUPS = {**SECTORS, **OUTER}
+BENCH = ["^SOX", "SPY"]
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
 
@@ -210,11 +208,12 @@ def build():
             rec = {
                 "sector": s, "sector_en": SECTOR_EN.get(s, s), "n": len(tks),
                 "layer": STACK.get(s, (99, ""))[0], "layer_name": STACK.get(s, (99, ""))[1],
+                "cat": CATEGORY.get(s, ""),
                 "bench": bench_tk,
                 "ret": {k: float((idx_ew.iloc[i] / idx_ew.iloc[i - n] - 1) * 100) for k, n in WINDOWS.items()},
                 "ret_cw": {k: float((idx_cw.iloc[i] / idx_cw.iloc[i - n] - 1) * 100) for k, n in WINDOWS.items()},
-                "rs_smh": {k: float((idx_ew.iloc[i] / idx_ew.iloc[i - n] - 1) * 100
-                                    - (adj["SMH"].iloc[i] / adj["SMH"].iloc[i - n] - 1) * 100)
+                "rs_sox": {k: float((idx_ew.iloc[i] / idx_ew.iloc[i - n] - 1) * 100
+                                    - (adj["^SOX"].iloc[i] / adj["^SOX"].iloc[i - n] - 1) * 100)
                            for k, n in WINDOWS.items()},
                 "rs_spy": {k: float((idx_ew.iloc[i] / idx_ew.iloc[i - n] - 1) * 100
                                     - (adj["SPY"].iloc[i] / adj["SPY"].iloc[i - n] - 1) * 100)
@@ -234,10 +233,10 @@ def build():
                 "corr_nvda": float(idx_ew.pct_change().iloc[-20:].corr(ret["NVDA"].iloc[-20:])),
                 "spark": [float(x) for x in (idx_ew.iloc[-30:] / idx_ew.iloc[-30] * 100)],
             }
-            rec["rs"] = rec["rs_smh"] if bench_tk == "SMH" else rec["rs_spy"]
+            rec["rs"] = rec["rs_sox"] if bench_tk == "^SOX" else rec["rs_spy"]
             rec["dv_share_chg"] = rec["dv_share"] - rec["dv_share_avg20"]
             rec["cap_minus_ew"] = rec["ret_cw"]["1W"] - rec["ret"]["1W"]
-            bench_1w = (adj["SMH"].iloc[-1] / adj["SMH"].iloc[-6] - 1) * 100
+            bench_1w = (adj["^SOX"].iloc[-1] / adj["^SOX"].iloc[-6] - 1) * 100
 
             stocks = []
             for t in tks:
@@ -265,8 +264,7 @@ def build():
 
     WINDOWS = {"1D": 1, "3D": 3, "1W": 5, "1M": 20}
 
-    tier1, ew1 = compute_tier(SECTORS, "SMH")
-    tier2, _   = compute_tier(OUTER, "SPY")
+    allrows, _ = compute_tier(ALL_GROUPS, "^SOX")
 
     # ---- 半導體整體 composite: all tier-1 names, equal weight — the cross-tier yardstick
     semi_tks = [t for v in SECTORS.values() for t in v if t in adj.columns]
@@ -303,7 +301,7 @@ def build():
     return {
         "asof": str(asof.date()),
         "generated": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M TPE"),
-        "sectors": tier1, "outer": tier2, "composite": composite,
+        "sectors": allrows, "composite": composite,
         "bench": bench, "failed": failed, "windows": list(WINDOWS.keys()),
     }
 
@@ -312,7 +310,8 @@ import html, os
 OUT_HTML = os.environ.get("OUT_HTML", "index.html")
 OUT_JSON = os.environ.get("OUT_JSON", "data.json")
 D = build()
-S, O, C, B = D["sectors"], D["outer"], D["composite"], D["bench"]
+S, C, B = D["sectors"], D["composite"], D["bench"]
+OTHERS = [s for s in S if s.get("cat") == "其他 AI"]
 
 W4 = ["1D", "3D", "1W", "1M"]
 
@@ -329,7 +328,6 @@ def add_rel_vol(rows):
     return rows
 
 add_rel_vol(S)
-add_rel_vol(O)
 
 # ---------------------------------------------------------------- color
 def _mix(a, b, t):
@@ -386,6 +384,13 @@ def signals(s):
         out.append(("up", "全面性", f'{s["breadth"]:.0f}% 成分股站上 20MA'))
     if s["breadth"] <= 15:
         out.append(("down", "全面走弱", f'僅 {s["breadth"]:.0f}% 成分股站上 20MA'))
+    spread = s.get("cap_minus_ew", 0.0)
+    if spread <= -3:
+        out.append(("up", "小型領漲",
+                    f'等權比市值加權高 {abs(spread):.1f} pp——板塊內中小型股在領，龍頭沒跟上'))
+    if spread >= 3:
+        out.append(("warn", "大型獨撐",
+                    f'市值加權比等權高 {spread:.1f} pp——只有權值股在撐，其餘成分股弱'))
     if s["d_rank"] >= 3:
         out.append(("up", f'躍升 {s["d_rank"]}', f'3 日內 {s["rank_prev"]} → {s["rank"]} 名'))
     if s["d_rank"] <= -3:
@@ -408,9 +413,9 @@ def sparkline(vals, w=98, h=22):
             f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="1.6" '
             f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
 
-def slope_chart(rows, lw=126):
+def slope_chart(rows, lw=200):
     n = len(rows)
-    W, H = 620, 46 + (n - 1) * 30
+    W, H = 1180, 46 + (n - 1) * 30
     pad_t, x0, x1 = 34, lw, W - lw
     rowh = (H - pad_t - 16) / max(n - 1, 1)
     def y(r): return pad_t + (r - 1) * rowh
@@ -467,6 +472,7 @@ def sector_rows(rows):
              f'<span class="drk {dcls}">{arrow}{abs(d) if d else ""}</span></td>',
              f'<td class="sec"><div class="sname">{html.escape(s["sector"])}'
              f'<span class="cnt">{s["n"]}</span>'
+             + (f'<span class="cat{"2" if s.get("cat")=="其他 AI" else ""}">{html.escape(s.get("cat",""))}</span>')
              + (f'<span class="lyrn">{html.escape(s.get("layer_name",""))}</span>' if lyr != 99 else '')
              + f'</div><div class="sgs">{chips(s)}</div></td>',
              f'<td class="spk">{sparkline(s["spark"])}</td>']
@@ -491,7 +497,6 @@ def stock_blocks(rows, tier):
         for x in st:
             trs.append(
                 f'<tr><td class="tk">{x["ticker"]}</td><td class="nm">{html.escape(x["name"])}</td>'
-                f'<td class="num">{x["price"]:,.2f}</td>'
                 f'<td class="num dim">{money(x.get("adv20"))}</td>'
                 + cell(x["r1"], sc["r1"], "{:+.2f}", "%") + cell(x["r3"], sc["r3"], "{:+.2f}", "%")
                 + cell(x["r5"], sc["r5"], "{:+.2f}", "%") + cell(x["r20"], sc["r20"], "{:+.2f}", "%")
@@ -506,7 +511,6 @@ def stock_blocks(rows, tier):
             f'{html.escape(s["sector"])}<span class="ssum">1W {s["ret"]["1W"]:+.2f}% · '
             f'廣度 {s["breadth"]:.0f}% · 相對量能 {s["rel_vol"]:.2f}×</span></summary>'
             f'<div class="tw"><table class="stk"><thead><tr><th>代號</th><th>名稱</th>'
-            f'<th class="num">收盤</th>'
             f'<th class="num" title="20 日平均成交金額——這檔能吃多少量不滑價">20日均額</th>'
             f'<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th>'
             f'<th class="num">1M</th>'
@@ -516,6 +520,87 @@ def stock_blocks(rows, tier):
             f'<th class="num" title="收盤價是否站上 20 日均線">&gt;20MA</th>'
             f'</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
     return "".join(out)
+
+# ---------------------------------------------------------------- 方向判讀
+def read_out():
+    """三行規則判讀。純粹把成立的條件攤開，不是進出場指令。"""
+    out = []
+
+    # 偏多：名次最前、且有量能與廣度確認
+    longs = [s for s in S if s["rel_vol"] >= 1.0 and s["breadth"] >= 60]
+    lg = min(longs, key=lambda z: z["rank"]) if longs else min(S, key=lambda z: z["rank"])
+    ok = lg["rel_vol"] >= 1.0 and lg["breadth"] >= 60
+    tp = lg["stocks"][0]
+    if ok:
+        txt = (f'<b>{html.escape(lg["sector"])}</b> 三個條件都成立：1W {lg["ret"]["1W"]:+.1f}%、'
+               f'相對量能 {lg["rel_vol"]:.2f}×、廣度 {lg["breadth"]:.0f}%。'
+               f'領頭 {tp["ticker"]} {tp["r5"]:+.1f}%。')
+    else:
+        txt = (f'<b>{html.escape(lg["sector"])}</b> 名次第一但確認不足：'
+               f'相對量能 {lg["rel_vol"]:.2f}×、廣度 {lg["breadth"]:.0f}%——追價要小心。')
+    out.append(("up", "偏多" if ok else "偏多（弱）", txt))
+
+    # 偏空：名次最後，量能決定賣壓真不真
+    wk = max(S, key=lambda z: z["rank"])
+    bot_stock = wk["stocks"][-1]
+    heavy = wk["rel_vol"] >= 1.0
+    txt = (f'<b>{html.escape(wk["sector"])}</b> 1W {wk["ret"]["1W"]:+.1f}%、廣度 {wk["breadth"]:.0f}%、'
+           f'相對量能 {wk["rel_vol"]:.2f}×'
+           + ("，<b>跌得有量</b>，賣壓是真的。" if heavy else "，量縮陰跌，反彈也沒力。"))
+    if wk["d_rank"] <= -2:
+        txt += f' 3 日內 {wk["rank_prev"]} → {wk["rank"]} 名。'
+    txt += f' 最弱 {bot_stock["ticker"]} {bot_stock["r5"]:+.1f}%。'
+    out.append(("down", "偏空", txt))
+
+    # 留意：當日最值得警戒的一件事
+    fake = [s for s in S if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85]
+    narrow = [s for s in S if s["ret"]["1W"] > 2 and s["breadth"] <= 40]
+    jump = [s for s in S if abs(s["d_rank"]) >= 3]
+    best_o = max(OTHERS, key=lambda z: z["ret"]["1W"]) if OTHERS else None
+    if fake:
+        f = min(fake, key=lambda z: z["rel_vol"])
+        note = (f'<b>{html.escape(f["sector"])}</b> 漲 {f["ret"]["1W"]:+.1f}% 但相對量能只有 '
+                f'{f["rel_vol"]:.2f}×——縮量反彈，別當突破追。')
+    elif narrow:
+        n = min(narrow, key=lambda z: z["breadth"])
+        note = (f'<b>{html.escape(n["sector"])}</b> 漲 {n["ret"]["1W"]:+.1f}% 但廣度只有 '
+                f'{n["breadth"]:.0f}%——是個股在拉，不是板塊行情。')
+    elif jump:
+        j = max(jump, key=lambda z: abs(z["d_rank"]))
+        note = (f'<b>{html.escape(j["sector"])}</b> 3 日內 {j["rank_prev"]} → {j["rank"]} 名，'
+                f'相對量能 {j["rel_vol"]:.2f}×——輪動剛換手。')
+    elif best_o and best_o["ret"]["1W"] > C["ret"]["1W"]:
+        note = (f'<b>{html.escape(best_o["sector"])}</b>（其他 AI）1W {best_o["ret"]["1W"]:+.1f}%，'
+                f'比半導體整體 {C["ret"]["1W"]:+.1f}% 強——題材重心不在半導體這邊。')
+    else:
+        hv = max(S, key=lambda z: z["rel_vol"])
+        note = (f'<b>{html.escape(hv["sector"])}</b> 相對量能 {hv["rel_vol"]:.2f}× 全表最高，'
+                f'1W {hv["ret"]["1W"]:+.1f}%——量先到，價還沒走完。')
+    out.append(("warn", "留意", note))
+    return out
+
+DIGEST = "".join(f'<li class="dg {t}"><span class="dtag">{tag}</span><span>{txt}</span></li>'
+                 for t, tag, txt in read_out())
+
+# ---------------------------------------------------------------- KPIs
+top, bot = min(S, key=lambda z: z["rank"]), max(S, key=lambda z: z["rank"])
+hivol = max(S, key=lambda z: z["rel_vol"])
+
+def kpi(lbl, val, sub, tone=""):
+    return (f'<div class="kpi"><div class="klbl">{lbl}</div><div class="kval {tone}">{val}</div>'
+            f'<div class="ksub">{sub}</div></div>')
+
+KPIS = "".join([
+    kpi("半導體整體 1W", f'{C["ret"]["1W"]:+.2f}%',
+        f'費半 {B["^SOX"]["ret"]["1W"]:+.2f}% · SPY {B["SPY"]["ret"]["1W"]:+.2f}%',
+        "up" if C["ret"]["1W"] >= 0 else "down"),
+    kpi("最強板塊", html.escape(top["sector"]),
+        f'1W {top["ret"]["1W"]:+.2f}% · 廣度 {top["breadth"]:.0f}%', "up"),
+    kpi("最弱板塊", html.escape(bot["sector"]),
+        f'1W {bot["ret"]["1W"]:+.2f}% · 廣度 {bot["breadth"]:.0f}%', "down"),
+    kpi("量能最集中", html.escape(hivol["sector"]),
+        f'相對量能 {hivol["rel_vol"]:.2f}× · 1W {hivol["ret"]["1W"]:+.2f}%', "up"),
+])
 
 ramp = ("".join(f'<span style="background:{_hex(_mix(POLES["dark"]["down"], POLES["dark"]["neutral"], i/5))}"></span>' for i in range(6))
         + "".join(f'<span style="background:{_hex(_mix(POLES["dark"]["neutral"], POLES["dark"]["up"], (i+1)/5))}"></span>' for i in range(5)))
@@ -532,11 +617,28 @@ body{margin:0;background:var(--page);color:var(--ink-1);font-size:13px;line-heig
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px 15px}
 h1{font-size:18px;margin:0;letter-spacing:-.01em}
 .meta{color:var(--ink-3);font-size:12px}
+.hero{background:var(--surf);border:1px solid var(--ring);border-radius:13px;padding:14px 17px 13px;
+ margin:15px 0 12px}
+.hero h2{font-size:13.5px;margin:0 0 9px}
+.hnote{font-weight:400;font-size:11px;color:var(--ink-3);margin-left:8px}
+ul.dgl{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+li.dg{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.5}
+.dtag{flex:0 0 auto;font-size:11px;padding:2px 8px;border-radius:5px;background:var(--chipbg);
+ color:var(--ink-2);margin-top:1px;min-width:64px;text-align:center;font-weight:600}
+li.dg.up .dtag{background:rgba(230,103,103,.16);color:var(--up)}
+li.dg.down .dtag{background:rgba(57,135,229,.16);color:var(--down)}
+li.dg.warn .dtag{background:rgba(250,178,25,.18);color:var(--warn)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--surf);border:1px solid var(--ring);border-radius:11px;padding:11px 14px}
+.klbl{font-size:11px;color:var(--ink-3)}
+.kval{font-size:17px;font-weight:640;margin:3px 0 2px;letter-spacing:-.015em}
+.kval.up{color:var(--up)}.kval.down{color:var(--down)}
+.ksub{font-size:11.5px;color:var(--ink-2)}
 .card{background:var(--surf);border:1px solid var(--ring);border-radius:12px;padding:13px 15px 11px;
  margin-bottom:16px}
 .card h2{font-size:13px;margin:0 0 2px}
 .card p.hint{font-size:11.5px;color:var(--ink-3);margin:0 0 9px}
-svg.slope{width:100%;height:auto;display:block;overflow:visible;max-width:760px}
+svg.slope{width:100%;height:auto;display:block;overflow:visible}
 .glin{stroke:var(--grid);stroke-width:1}
 .axl{font-size:10.5px;fill:var(--ink-3)}
 .slab{font-size:11px;fill:var(--ink-2)}
@@ -557,6 +659,10 @@ td.rk{width:50px}
 .drk.up{color:var(--up)}.drk.down{color:var(--down)}
 .sname{font-weight:590}
 .cnt{font-size:10.5px;color:var(--ink-3);font-weight:400;margin-left:6px}
+.cat{font-size:10px;color:var(--ink-3);font-weight:400;margin-left:7px;padding:1px 6px;
+ border-radius:4px;border:1px solid var(--ring)}
+.cat2{font-size:10px;font-weight:400;margin-left:7px;padding:1px 6px;border-radius:4px;
+ background:rgba(57,135,229,.14);color:#7fb2f0}
 .lyrn{font-size:10.5px;color:var(--ink-3);font-weight:400;margin-left:8px;padding:1px 6px;
  border-radius:4px;background:var(--chipbg)}
 td.lyrc{color:var(--ink-2);font-weight:600;cursor:help}
@@ -619,28 +725,26 @@ HTML = f"""<!DOCTYPE html>
   <div class="meta">資料日 {D["asof"]}（美股收盤）· 產生於 {D["generated"]}</div>
 </header>
 
+<div class="hero"><h2>方向判讀 <span class="hnote">規則判讀，非投資建議</span></h2>
+  <ul class="dgl">{DIGEST}</ul></div>
+
+<div class="kpis">{KPIS}</div>
+
 <div class="card"><h2>板塊排名遷移</h2>
   <p class="hint">依 1 週報酬排名。左為 3 個交易日前，右為最新。紅線往上＝名次爬升，藍線往下＝退位。</p>
   {slope_chart(S)}</div>
 
-<div class="sechd"><h2>半導體板塊</h2><p>等權每日再平衡 · 共 {sum(s["n"] for s in S)} 檔</p></div>
+<div class="sechd"><h2>板塊總表</h2><p>等權每日再平衡 · {sum(1 for s in S if s["cat"]=="半導體")} 個半導體板塊 + {sum(1 for s in S if s["cat"]=="其他 AI")} 個其他 AI 板塊 · 共 {sum(s["n"] for s in S)} 檔</p></div>
 <div class="card" style="padding:0 4px 0">
 <div class="tw"><table class="main"><thead>{HEAD}</thead>
-<tbody>{ref_row("半導體整體", f"本表 {sum(s['n'] for s in S)} 檔等權", C, C["breadth"])}
-{ref_row("SMH", "半導體 ETF · 基準", B["SMH"])}</tbody>
+<tbody>{ref_row("半導體整體", f"{sum(1 for s in S if s['cat']=='半導體')} 個半導體板塊 · {C['n']} 檔等權", C, C["breadth"])}
+{ref_row("費半 SOX", "費城半導體指數 · 市值加權", B["^SOX"])}</tbody>
 <tbody>{sector_rows(S)}</tbody></table></div>
 <div class="legend"><span>弱</span><div class="lramp">{ramp}</div><span>強</span>
   <span style="margin-left:8px">點欄位標題可排序 · 板塊名稱下的標籤可滑鼠停留看說明</span></div></div>
 
-<div class="sechd"><h2>其他 AI 板塊</h2>
-  <p>只有半導體動、這邊沒動 ＝ 半導體自己的事；一起動 ＝ 真的 AI 題材。共 {sum(s["n"] for s in O)} 檔</p></div>
-<div class="card" style="padding:0 4px 0">
-<div class="tw"><table class="main"><thead>{HEAD}</thead>
-<tbody>{ref_row("SPY", "S&P 500 · 大盤", B["SPY"])}</tbody>
-<tbody>{sector_rows(O)}</tbody></table></div></div>
-
 <div class="sechd"><h2>個股明細</h2><p>點開展開</p></div>
-{stock_blocks(S, "")}{stock_blocks(O, "外圍 ")}
+{stock_blocks(S, "")}
 
 <div class="foot">Yahoo Finance 日線 · 還原權值價{
   "　|　抓取失敗：" + ", ".join(D["failed"]) if D["failed"] else ""}</div>
