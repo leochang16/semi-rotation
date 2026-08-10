@@ -1,0 +1,45 @@
+name: 每日更新半導體板塊輪動
+
+on:
+  schedule:
+    # 00:30 UTC = 08:30 台北時間，週二至週六（對應美股週一至週五收盤後）
+    - cron: "30 0 * * 2-6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-rotation
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝相依套件
+        run: pip install --quiet pandas numpy
+
+      - name: 產生儀表板
+        run: python rotation.py
+        env:
+          OUT_HTML: index.html
+          OUT_JSON: data.json
+
+      - name: 提交結果
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html data.json
+          if git diff --staged --quiet; then
+            echo "沒有變化，略過提交"
+          else
+            git commit -m "更新至 $(date -u +%Y-%m-%d) 收盤資料"
+            git push
+          fi
