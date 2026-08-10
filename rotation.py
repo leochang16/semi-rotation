@@ -232,7 +232,7 @@ def build():
                 "rsi": float(rsi(idx_ew).iloc[-1]),
                 "vol20": float(idx_ew.pct_change().iloc[-20:].std() * (252 ** 0.5) * 100),
                 "corr_nvda": float(idx_ew.pct_change().iloc[-20:].corr(ret["NVDA"].iloc[-20:])),
-                "spark": [float(x) for x in (idx_ew.iloc[-60:] / idx_ew.iloc[-60] * 100)],
+                "spark": [float(x) for x in (idx_ew.iloc[-30:] / idx_ew.iloc[-30] * 100)],
             }
             rec["rs"] = rec["rs_smh"] if bench_tk == "SMH" else rec["rs_spy"]
             rec["dv_share_chg"] = rec["dv_share"] - rec["dv_share_avg20"]
@@ -252,9 +252,9 @@ def build():
                     "r3": float((p.iloc[-1] / p.iloc[-4] - 1) * 100) if len(p) > 4 else None,
                     "r5": float((p.iloc[-1] / p.iloc[-6] - 1) * 100) if len(p) > 6 else None,
                     "r20": float((p.iloc[-1] / p.iloc[-21] - 1) * 100) if len(p) > 21 else None,
-                    "r63": float((p.iloc[-1] / p.iloc[-64] - 1) * 100) if len(p) > 64 else None,
                     "rs5": float((p.iloc[-1] / p.iloc[-6] - 1) * 100 - bench_1w) if len(p) > 6 else None,
                     "volr": float(dv[t].iloc[-1] / dv[t].iloc[-21:-1].mean()),
+                    "adv20": float(dv[t].iloc[-21:-1].mean()),
                     "f52": float((p.iloc[-1] / w52t.max() - 1) * 100),
                     "rsi": float(rsi(p).iloc[-1]),
                     "a20": bool(p.iloc[-1] > p.rolling(20).mean().iloc[-1]),
@@ -263,7 +263,7 @@ def build():
             out.append(rec)
         return out, sec_ew
 
-    WINDOWS = {"1D": 1, "3D": 3, "1W": 5, "1M": 20, "3M": 63}
+    WINDOWS = {"1D": 1, "3D": 3, "1W": 5, "1M": 20}
 
     tier1, ew1 = compute_tier(SECTORS, "SMH")
     tier2, _   = compute_tier(OUTER, "SPY")
@@ -284,7 +284,7 @@ def build():
         "vol20": float(comp.pct_change().iloc[-20:].std() * (252 ** 0.5) * 100),
         "from_52wh": float((comp.iloc[-1] / (comp.iloc[-252:] if len(comp) >= 252 else comp).max() - 1) * 100),
         "dv_share": None, "dv_share_chg": None, "breadth_": None,
-        "spark": [float(x) for x in (comp.iloc[-60:] / comp.iloc[-60] * 100)],
+        "spark": [float(x) for x in (comp.iloc[-30:] / comp.iloc[-30] * 100)],
     }
     composite["rs"] = composite["rs_spy"]
 
@@ -297,7 +297,7 @@ def build():
             "vol20": float(bp.pct_change().iloc[-20:].std() * (252 ** 0.5) * 100),
             "from_52wh": float((bp.iloc[-1] / w52b.max() - 1) * 100),
             "rsi": float(rsi(bp).iloc[-1]),
-            "spark": [float(x) for x in (bp.iloc[-60:] / bp.iloc[-60] * 100)],
+            "spark": [float(x) for x in (bp.iloc[-30:] / bp.iloc[-30] * 100)],
         }
 
     return {
@@ -313,6 +313,23 @@ OUT_HTML = os.environ.get("OUT_HTML", "index.html")
 OUT_JSON = os.environ.get("OUT_JSON", "data.json")
 D = build()
 S, O, C, B = D["sectors"], D["outer"], D["composite"], D["bench"]
+
+W4 = ["1D", "3D", "1W", "1M"]
+
+def add_rel_vol(rows):
+    """相對量能 = (板塊成交額 ÷ 自身 20 日均量) ÷ 全表平均。
+
+    比「成交額佔比」乾淨：佔比是零和的（9 塊加總必為 100%），兩個權值最大的板塊
+    會主導分母，別的板塊即使量沒變也會被動位移。相對量能是絕對量的比值，又用全表
+    平均校正掉「大盤整體放量」的日子。
+    """
+    m = sum(s["vol_ratio"] for s in rows) / max(len(rows), 1)
+    for s in rows:
+        s["rel_vol"] = s["vol_ratio"] / m if m else 1.0
+    return rows
+
+add_rel_vol(S)
+add_rel_vol(O)
 
 # ---------------------------------------------------------------- color
 def _mix(a, b, t):
@@ -339,35 +356,36 @@ def heat(v, scale, mode="light"):
 def cell(v, scale, fmt="{:+.2f}", suffix="", cls=""):
     if v is None:
         return f'<td class="num {cls}">—</td>'
-    bl, fl = heat(v, scale, "light")
-    bd, fd = heat(v, scale, "dark")
-    return (f'<td class="num heat {cls}" style="--bl:{bl};--fl:{fl};--bd:{bd};--fd:{fd}">'
+    bg, fg = heat(v, scale, "dark")
+    return (f'<td class="num heat {cls}" style="--bg:{bg};--fg:{fg}">'
             f'{fmt.format(v)}{suffix}</td>')
 
 def maxabs(vals, floor=0.5):
     vs = [abs(v) for v in vals if v is not None]
     return max(max(vs) if vs else floor, floor)
 
-W4 = ["1D", "3D", "1W", "1M"]
+def money(v):
+    if not v:
+        return "—"
+    return f"{v/1e9:.1f}B" if v >= 1e9 else f"{v/1e6:.0f}M"
 
 # ---------------------------------------------------------------- signals
 def signals(s):
-    """The per-sector story, as short chips. Max 3, most important first."""
+    """該板塊當天的重點，做成短標籤。最多 3 個，最重要的在前。"""
     out = []
-    if s["ret"]["1W"] > 2 and s["dv_share_chg"] <= -1.0:
-        out.append(("warn", "縮量", f'漲 {s["ret"]["1W"]:+.1f}% 但成交額佔比掉 {abs(s["dv_share_chg"]):.2f} pp，沒有增量資金'))
-    if s["vol_ratio"] >= 1.3:
-        out.append(("up", "爆量", f'成交額為 20 日均的 {s["vol_ratio"]:.2f} 倍'))
+    if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85:
+        out.append(("warn", "縮量",
+                    f'漲 {s["ret"]["1W"]:+.1f}% 但相對量能只有 {s["rel_vol"]:.2f}×，沒有增量資金'))
+    if s["rel_vol"] >= 1.3:
+        out.append(("up", "爆量",
+                    f'相對量能 {s["rel_vol"]:.2f}×（自身量能 {s["vol_ratio"]:.2f}× 對比全表平均）'))
     if s["ret"]["1W"] > 2 and s["breadth"] <= 40:
-        out.append(("warn", "個股行情", f'只有 {s["breadth"]:.0f}% 成分股站上 20MA，不是板塊性資金流入'))
+        out.append(("warn", "個股行情",
+                    f'只有 {s["breadth"]:.0f}% 成分股站上 20MA，不是板塊性行情'))
     if s["breadth"] >= 90:
         out.append(("up", "全面性", f'{s["breadth"]:.0f}% 成分股站上 20MA'))
     if s["breadth"] <= 15:
         out.append(("down", "全面走弱", f'僅 {s["breadth"]:.0f}% 成分股站上 20MA'))
-    if s["rsi"] >= 70:
-        out.append(("warn", "過熱", f'RSI {s["rsi"]:.0f}'))
-    if s["rsi"] <= 30:
-        out.append(("down", "超賣", f'RSI {s["rsi"]:.0f}'))
     if s["d_rank"] >= 3:
         out.append(("up", f'躍升 {s["d_rank"]}', f'3 日內 {s["rank_prev"]} → {s["rank"]} 名'))
     if s["d_rank"] <= -3:
@@ -377,45 +395,6 @@ def signals(s):
 def chips(s):
     return "".join(f'<span class="sg {t}" title="{html.escape(tip)}">{html.escape(lbl)}</span>'
                    for t, lbl, tip in signals(s))
-
-# ---------------------------------------------------------------- digest (3 lines)
-def digest():
-    out = []
-    cr = C["ret"]["1W"] - B["SPY"]["ret"]["1W"]
-    best_o = max(O, key=lambda z: z["ret"]["1W"])
-    if cr >= 0:
-        t = (f'半導體整體本週 <b>{C["ret"]["1W"]:+.2f}%</b>，領先 SPY {cr:+.2f} 個百分點，錢還在半導體。')
-        if best_o["ret"]["1W"] - B["SPY"]["ret"]["1W"] > cr:
-            t += f' 但外圍的<b>{html.escape(best_o["sector"])}</b>更強（{best_o["ret"]["1W"]:+.2f}%），有分流。'
-    else:
-        t = (f'半導體整體本週 <b>{C["ret"]["1W"]:+.2f}%</b>，落後 SPY {abs(cr):.2f} 個百分點，'
-             f'資金正在離開；外圍最強的是<b>{html.escape(best_o["sector"])}</b>（{best_o["ret"]["1W"]:+.2f}%）。')
-    out.append(("up" if cr >= 0 else "down", "資金位置", t))
-
-    ldr = min(S, key=lambda z: z["rank"])
-    top = ldr["stocks"][0]
-    conf = (f'成交額佔比同步 {ldr["dv_share_chg"]:+.2f} pp，<b>有量有價</b>'
-            if ldr["dv_share_chg"] > 0.3 else
-            f'但成交額佔比 {ldr["dv_share_chg"]:+.2f} pp，<b>價漲量沒跟上</b>')
-    out.append(("up", "領漲",
-                f'<b>{html.escape(ldr["sector"])}</b> 本週 {ldr["ret"]["1W"]:+.2f}% 居首，{conf}。'
-                f'帶頭的是 {top["ticker"]} {top["r5"]:+.1f}%。'))
-
-    # short side gets equal billing — he trades both directions
-    wk = max(S, key=lambda z: z["rank"])
-    weak_bits = [f'本週 {wk["ret"]["1W"]:+.2f}%、廣度 {wk["breadth"]:.0f}%']
-    if wk["dv_share_chg"] < 0:
-        weak_bits.append(f'成交額佔比 {wk["dv_share_chg"]:+.2f} pp')
-    if wk["d_rank"] <= -2:
-        weak_bits.append(f'3 日內 {wk["rank_prev"]} → {wk["rank"]} 名')
-    if wk["vol_ratio"] >= 1.2:
-        weak_bits.append(f'但量能 {wk["vol_ratio"]:.2f}×，跌得有量')
-    out.append(("down", "空方",
-                f'最弱是<b>{html.escape(wk["sector"])}</b>，' + "、".join(weak_bits) + "。"))
-    return out[:3]
-
-DIGEST = "".join(f'<li class="dg {t}"><span class="dtag">{tag}</span><span>{txt}</span></li>'
-                 for t, tag, txt in digest())
 
 # ---------------------------------------------------------------- pieces
 def sparkline(vals, w=98, h=22):
@@ -429,9 +408,9 @@ def sparkline(vals, w=98, h=22):
             f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="1.6" '
             f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
 
-def slope_chart(rows, lw=118):
+def slope_chart(rows, lw=126):
     n = len(rows)
-    W, H = 560, 46 + (n - 1) * 30
+    W, H = 620, 46 + (n - 1) * 30
     pad_t, x0, x1 = 34, lw, W - lw
     rowh = (H - pad_t - 16) / max(n - 1, 1)
     def y(r): return pad_t + (r - 1) * rowh
@@ -443,7 +422,7 @@ def slope_chart(rows, lw=118):
     for s in sorted(rows, key=lambda z: z["rank"]):
         a, b, d = s["rank_prev"], s["rank"], s["d_rank"]
         col = "var(--up)" if d > 0 else ("var(--down)" if d < 0 else "var(--ink-3)")
-        p.append(f'<path d="M{x0},{y(a):.1f} C{x0+70},{y(a):.1f} {x1-70},{y(b):.1f} {x1},{y(b):.1f}" '
+        p.append(f'<path d="M{x0},{y(a):.1f} C{x0+80},{y(a):.1f} {x1-80},{y(b):.1f} {x1},{y(b):.1f}" '
                  f'fill="none" stroke="{col}" stroke-width="{2.6 if d else 1.4}" '
                  f'opacity="{0.95 if d else 0.45}"/>')
         p.append(f'<circle cx="{x0}" cy="{y(a):.1f}" r="3.4" fill="{col}"/>')
@@ -454,52 +433,29 @@ def slope_chart(rows, lw=118):
                  f'{b}. {html.escape(s["sector"])}{f" ({d:+d})" if d else ""}</text>')
     return "".join(p) + "</svg>"
 
-def flow_chart(rows, lw=112):
-    rows = sorted(rows, key=lambda z: -z["dv_share_chg"])
-    m = maxabs([z["dv_share_chg"] for z in rows], 0.5)
-    W, rowh = 560, 26
-    H = len(rows) * rowh + 26
-    cx = (lw + 8 + (W - 62)) / 2
-    maxbw = cx - lw - 80
-    p = [f'<svg viewBox="0 0 {W} {H}" class="flow" role="img" aria-label="成交額佔比變化">',
-         f'<line x1="{cx}" y1="18" x2="{cx}" y2="{H-6}" class="glin"/>',
-         f'<text x="{cx}" y="12" class="axl" text-anchor="middle">0</text>']
-    for i, s in enumerate(rows):
-        yy = 24 + i * rowh
-        v = s["dv_share_chg"]
-        bw = abs(v) / m * maxbw
-        col = "var(--up)" if v >= 0 else "var(--down)"
-        p.append(f'<rect x="{(cx if v>=0 else cx-bw):.1f}" y="{yy:.1f}" width="{bw:.1f}" '
-                 f'height="13" rx="3" fill="{col}"/>')
-        p.append(f'<text x="{lw}" y="{yy+11:.1f}" class="slab" text-anchor="end">'
-                 f'{html.escape(s["sector"])}</text>')
-        lx, anc = (cx + bw + 7, "start") if v >= 0 else (cx - bw - 7, "end")
-        p.append(f'<text x="{lx:.1f}" y="{yy+11:.1f}" class="slab" text-anchor="{anc}">{v:+.2f} pp</text>')
-    return "".join(p) + "</svg>"
-
 # ---------------------------------------------------------------- table
-def scales(rows):
-    return dict(ret={k: maxabs([s["ret"][k] for s in rows], 1.0) for k in W4},
-                share=maxabs([s["dv_share_chg"] for s in rows], 0.5),
-                f52=maxabs([s["from_52wh"] for s in rows], 1.0))
+HEAD = """<tr class="h">
+<th class="nosort">名次<br><span class="th2">Δ3日</span></th>
+<th class="nosort">板塊</th><th class="nosort">30日走勢</th>
+<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th><th class="num">1M</th>
+<th class="num sep" title="（板塊今日成交額 ÷ 自身 20 日均量）÷ 全表平均。&gt;1 代表這板塊放量放得比大盤兇。">相對量能</th>
+<th class="num sep" title="板塊內站上 20 日均線的成分股比例">廣度<br><span class="th2">&gt;20MA</span></th>
+<th class="num" title="板塊指數近 20 日報酬標準差年化。抓停損寬度用。">波動率<br><span class="th2">20日年化</span></th></tr>"""
 
 def ref_row(name, note, d, breadth=None):
-    """Reference row: 半導體整體 / SMH / SPY."""
-    tds = ['<td class="rk">—</td>', '<td class="num dim">—</td>',
+    tds = ['<td class="rk">—</td>',
            f'<td class="sec"><div class="sname">{html.escape(name)}</div>'
            f'<div class="sen">{html.escape(note)}</div></td>',
            f'<td class="spk">{sparkline(d["spark"])}</td>']
     tds += [f'<td class="num b">{d["ret"][k]:+.2f}%</td>' for k in W4]
-    tds.append('<td class="num sep">—</td>')          # Δ成交額佔比
-    tds.append('<td class="num">—</td>')              # 量能倍數
+    tds.append('<td class="num sep">—</td>')
     tds.append(f'<td class="num sep">{breadth:.0f}%</td>' if breadth is not None
                else '<td class="num sep">—</td>')
     tds.append(f'<td class="num">{d["vol20"]:.0f}%</td>')
-    tds.append(f'<td class="num">{d["rsi"]:.0f}</td>')
     return f'<tr class="comp">{"".join(tds)}</tr>'
 
 def sector_rows(rows):
-    sc = scales(rows)
+    sc = {k: maxabs([s["ret"][k] for s in rows], 1.0) for k in W4}
     out = []
     for s in sorted(rows, key=lambda z: z["rank"]):
         d = s["d_rank"]
@@ -509,132 +465,78 @@ def sector_rows(rows):
         r = [f'<tr data-anom="{1 if signals(s) else 0}" data-layer="{lyr}">',
              f'<td class="rk"><span class="rknum">{s["rank"]}</span>'
              f'<span class="drk {dcls}">{arrow}{abs(d) if d else ""}</span></td>',
-             (f'<td class="num lyrc" title="{html.escape(s.get("layer_name",""))}">{lyr}</td>'
-              if lyr != 99 else '<td class="num dim">—</td>'),
              f'<td class="sec"><div class="sname">{html.escape(s["sector"])}'
              f'<span class="cnt">{s["n"]}</span>'
              + (f'<span class="lyrn">{html.escape(s.get("layer_name",""))}</span>' if lyr != 99 else '')
              + f'</div><div class="sgs">{chips(s)}</div></td>',
              f'<td class="spk">{sparkline(s["spark"])}</td>']
         for k in W4:
-            r.append(cell(s["ret"][k], sc["ret"][k], "{:+.2f}", "%"))
-        r.append(cell(s["dv_share_chg"], sc["share"], "{:+.2f}", " pp", "sep"))
-        vr = s["vol_ratio"]
-        r.append(f'<td class="num"><span class="chip {"hot" if vr>=1.3 else ("cold" if vr<=0.7 else "")}">'
-                 f'{vr:.2f}×</span></td>')
+            r.append(cell(s["ret"][k], sc[k], "{:+.2f}", "%"))
+        rv = s["rel_vol"]
+        r.append(f'<td class="num sep"><span class="chip {"hot" if rv>=1.3 else ("cold" if rv<=0.7 else "")}">'
+                 f'{rv:.2f}×</span></td>')
         bd = s["breadth"]
         r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
                  f'<span class="bn">{bd:.0f}%</span></td>')
         r.append(f'<td class="num dim">{s["vol20"]:.0f}%</td>')
-        rs_ = s["rsi"]
-        r.append(f'<td class="num"><span class="chip {"hot" if rs_>=70 else ("cold" if rs_<=30 else "")}">'
-                 f'{rs_:.0f}</span></td>')
         out.append("".join(r) + "</tr>")
     return "".join(out)
-
-HEAD = """<tr class="h">
-<th class="nosort">名次<br><span class="th2">Δ3日</span></th>
-<th class="lyr" title="供應鏈位置：1 最下游（系統），7 最上游（材料）。點此依層級排序。">層</th>
-<th class="nosort">板塊</th><th class="nosort">60日走勢</th>
-<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th><th class="num">1M</th>
-<th class="num sep" title="該板塊成交金額佔全部板塊總成交額的比重，減去其 20 日平均。錢的分配比例變了多少。">Δ成交額佔比<br><span class="th2">vs 20日均</span></th>
-<th class="num" title="板塊今日成交金額 ÷ 其 20 日均量。事件行情最重要的確認：有沒有真的爆量。">量能<br><span class="th2">vs 20日均</span></th>
-<th class="num sep" title="板塊內站上 20 日均線的成分股比例">廣度<br><span class="th2">&gt;20MA</span></th>
-<th class="num" title="板塊指數近 20 日報酬標準差，年化。抓停損寬度用。">波動率<br><span class="th2">20日年化</span></th>
-<th class="num" title="板塊指數 RSI(14)。≥70 超買、≤30 超賣。">RSI</th></tr>"""
 
 def stock_blocks(rows, tier):
     out = []
     for s in sorted(rows, key=lambda z: z["rank"]):
         st = s["stocks"]
-        sc = {k: maxabs([x[k] for x in st], 1.0) for k in ("r1", "r5", "r20", "r63")}
+        sc = {k: maxabs([x[k] for x in st], 1.0) for k in ("r1", "r3", "r5", "r20")}
         trs = []
         for x in st:
             trs.append(
                 f'<tr><td class="tk">{x["ticker"]}</td><td class="nm">{html.escape(x["name"])}</td>'
                 f'<td class="num">{x["price"]:,.2f}</td>'
-                + cell(x["r1"], sc["r1"], "{:+.2f}", "%") + cell(x["r5"], sc["r5"], "{:+.2f}", "%")
-                + cell(x["r20"], sc["r20"], "{:+.2f}", "%") + cell(x["r63"], sc["r63"], "{:+.2f}", "%")
-                + f'<td class="num dim">{x["volr"]:.2f}×</td><td class="num">{x["f52"]:+.1f}%</td>'
+                f'<td class="num dim">{money(x.get("adv20"))}</td>'
+                + cell(x["r1"], sc["r1"], "{:+.2f}", "%") + cell(x["r3"], sc["r3"], "{:+.2f}", "%")
+                + cell(x["r5"], sc["r5"], "{:+.2f}", "%") + cell(x["r20"], sc["r20"], "{:+.2f}", "%")
+                + f'<td class="num"><span class="chip {"hot" if x["volr"]>=1.5 else ""}">'
+                  f'{x["volr"]:.2f}×</span></td>'
+                  f'<td class="num">{x["f52"]:+.1f}%</td>'
+                  f'<td class="num"><span class="chip {"hot" if x["rsi"]>=70 else ("cold" if x["rsi"]<=30 else "")}">'
+                  f'{x["rsi"]:.0f}</span></td>'
                   f'<td class="num">{"✓" if x["a20"] else "·"}</td></tr>')
         out.append(
             f'<details class="sblock"><summary><span class="srk">{tier}#{s["rank"]}</span>'
             f'{html.escape(s["sector"])}<span class="ssum">1W {s["ret"]["1W"]:+.2f}% · '
-            f'廣度 {s["breadth"]:.0f}%</span></summary>'
+            f'廣度 {s["breadth"]:.0f}% · 相對量能 {s["rel_vol"]:.2f}×</span></summary>'
             f'<div class="tw"><table class="stk"><thead><tr><th>代號</th><th>名稱</th>'
-            f'<th class="num">收盤</th><th class="num">市值</th><th class="num">1D</th>'
-            f'<th class="num">1W</th><th class="num">1M</th><th class="num">3M</th>'
-            f'<th class="num">量能</th><th class="num">距52週高</th><th class="num">&gt;20MA</th>'
+            f'<th class="num">收盤</th>'
+            f'<th class="num" title="20 日平均成交金額——這檔能吃多少量不滑價">20日均額</th>'
+            f'<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th>'
+            f'<th class="num">1M</th>'
+            f'<th class="num" title="今日成交額 ÷ 自身 20 日均量">量能</th>'
+            f'<th class="num">距52週高</th>'
+            f'<th class="num" title="RSI(14)。≥70 超買、≤30 超賣。">RSI</th>'
+            f'<th class="num" title="收盤價是否站上 20 日均線">&gt;20MA</th>'
             f'</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
     return "".join(out)
 
-# ---------------------------------------------------------------- KPIs
-top, bot = min(S, key=lambda z: z["rank"]), max(S, key=lambda z: z["rank"])
-inflow = max(S, key=lambda z: z["dv_share_chg"])
-faller = min(S, key=lambda z: z["d_rank"])
-
-def kpi(lbl, val, sub, tone="", tip=""):
-    return (f'<div class="kpi"{f" title={chr(34)}{html.escape(tip)}{chr(34)}" if tip else ""}>'
-            f'<div class="klbl">{lbl}</div><div class="kval {tone}">{val}</div>'
-            f'<div class="ksub">{sub}</div></div>')
-
-KPIS = "".join([
-    kpi("半導體整體 1W", f'{C["ret"]["1W"]:+.2f}%',
-        f'SMH {B["SMH"]["ret"]["1W"]:+.2f}% · SPY {B["SPY"]["ret"]["1W"]:+.2f}%',
-        "up" if C["ret"]["1W"] >= 0 else "down"),
-    kpi("最強板塊", html.escape(top["sector"]), f'1W {top["ret"]["1W"]:+.2f}%', "up"),
-    kpi("最弱板塊", html.escape(bot["sector"]), f'1W {bot["ret"]["1W"]:+.2f}%', "down"),
-    kpi("資金流入最多", html.escape(inflow["sector"]),
-        f'成交額佔比 {inflow["dv_share_chg"]:+.2f} pp vs 20 日均', "up",
-        "成交額佔比 = 該板塊今日成交金額 ÷ 全部板塊總成交金額。這裡看的是它比自己過去 20 日平均高出多少個百分點。"),
-])
-
-ramp = ("".join(f'<span style="background:{_hex(_mix(POLES["light"]["down"], POLES["light"]["neutral"], i/5))}"></span>' for i in range(6))
-        + "".join(f'<span style="background:{_hex(_mix(POLES["light"]["neutral"], POLES["light"]["up"], (i+1)/5))}"></span>' for i in range(5)))
+ramp = ("".join(f'<span style="background:{_hex(_mix(POLES["dark"]["down"], POLES["dark"]["neutral"], i/5))}"></span>' for i in range(6))
+        + "".join(f'<span style="background:{_hex(_mix(POLES["dark"]["neutral"], POLES["dark"]["up"], (i+1)/5))}"></span>' for i in range(5)))
 
 CSS = """
-:root{color-scheme:light dark;--page:#f9f9f7;--surf:#fcfcfb;--ink-1:#0b0b0b;--ink-2:#52514e;
- --ink-3:#898781;--grid:#e1e0d9;--rule:#c3c2b7;--ring:rgba(11,11,11,.10);
- --up:#a42822;--down:#184f95;--warn:#8a6100;--chipbg:rgba(11,11,11,.05)}
-@media (prefers-color-scheme:dark){:root:where(:not([data-theme=light])){
- --page:#0d0d0d;--surf:#1a1a19;--ink-1:#fff;--ink-2:#c3c2b7;--ink-3:#898781;--grid:#2c2c2a;
- --rule:#383835;--ring:rgba(255,255,255,.10);--up:#e66767;--down:#3987e5;--warn:#fab219;
- --chipbg:rgba(255,255,255,.07)}}
-:root[data-theme=dark]{--page:#0d0d0d;--surf:#1a1a19;--ink-1:#fff;--ink-2:#c3c2b7;--ink-3:#898781;
- --grid:#2c2c2a;--rule:#383835;--ring:rgba(255,255,255,.10);--up:#e66767;--down:#3987e5;
- --warn:#fab219;--chipbg:rgba(255,255,255,.07)}
+:root{color-scheme:dark;--page:#0d0d0d;--surf:#1a1a19;--ink-1:#fff;--ink-2:#c3c2b7;
+ --ink-3:#898781;--grid:#2c2c2a;--rule:#383835;--ring:rgba(255,255,255,.10);
+ --up:#e66767;--down:#3987e5;--warn:#fab219;--chipbg:rgba(255,255,255,.07)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--ink-1);font-size:13px;line-height:1.45;
  font-family:system-ui,-apple-system,"Segoe UI","PingFang TC","Noto Sans TC",sans-serif;
  -webkit-font-smoothing:antialiased}
-.wrap{max-width:1360px;margin:0 auto;padding:20px 18px 56px}
+.wrap{max-width:1280px;margin:0 auto;padding:20px 18px 44px}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px 15px}
 h1{font-size:18px;margin:0;letter-spacing:-.01em}
 .meta{color:var(--ink-3);font-size:12px}
-.tgl{margin-left:auto;display:flex;gap:6px}
-button.t{background:var(--surf);border:1px solid var(--ring);color:var(--ink-2);border-radius:7px;
- padding:5px 11px;font:inherit;font-size:12px;cursor:pointer}
-button.t[aria-pressed=true]{background:var(--ink-1);color:var(--surf);border-color:var(--ink-1)}
-.hero{background:var(--surf);border:1px solid var(--ring);border-radius:13px;padding:14px 17px 13px;
- margin:15px 0 16px}
-.hero h2{font-size:13.5px;margin:0 0 9px}
-ul.dgl{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
-li.dg{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.5}
-.dtag{flex:0 0 auto;font-size:11px;padding:2px 8px;border-radius:5px;background:var(--chipbg);
- color:var(--ink-2);margin-top:1px;min-width:56px;text-align:center}
-li.dg.up .dtag{background:rgba(164,40,34,.12);color:var(--up)}
-li.dg.down .dtag{background:rgba(24,79,149,.12);color:var(--down)}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:16px}
-.kpi{background:var(--surf);border:1px solid var(--ring);border-radius:11px;padding:11px 14px}
-.klbl{font-size:11px;color:var(--ink-3)}
-.kval{font-size:18px;font-weight:640;margin:3px 0 2px;letter-spacing:-.015em}
-.kval.up{color:var(--up)}.kval.down{color:var(--down)}
-.ksub{font-size:11.5px;color:var(--ink-2)}
-.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:13px;margin-bottom:16px}
-.card{background:var(--surf);border:1px solid var(--ring);border-radius:12px;padding:13px 15px 11px}
+.card{background:var(--surf);border:1px solid var(--ring);border-radius:12px;padding:13px 15px 11px;
+ margin-bottom:16px}
 .card h2{font-size:13px;margin:0 0 2px}
 .card p.hint{font-size:11.5px;color:var(--ink-3);margin:0 0 9px}
-svg.slope,svg.flow{width:100%;height:auto;display:block;overflow:visible}
+svg.slope{width:100%;height:auto;display:block;overflow:visible;max-width:760px}
 .glin{stroke:var(--grid);stroke-width:1}
 .axl{font-size:10.5px;fill:var(--ink-3)}
 .slab{font-size:11px;fill:var(--ink-2)}
@@ -645,10 +547,7 @@ thead th{position:sticky;top:0;background:var(--surf);z-index:2;font-size:11px;c
  font-weight:600;border-bottom:1px solid var(--rule);cursor:pointer;user-select:none}
 .th2{font-weight:400}
 td.num,th.num{text-align:right}
-td.heat{background:var(--bl);color:var(--fl);font-weight:520}
-@media(prefers-color-scheme:dark){:root:where(:not([data-theme=light])) td.heat{
- background:var(--bd);color:var(--fd)}}
-:root[data-theme=dark] td.heat{background:var(--bd);color:var(--fd)}
+td.heat{background:var(--bg);color:var(--fg);font-weight:520}
 .sep{border-left:1px solid var(--grid)}
 td.dim{color:var(--ink-3)}
 td.b{font-weight:560}
@@ -658,8 +557,8 @@ td.rk{width:50px}
 .drk.up{color:var(--up)}.drk.down{color:var(--down)}
 .sname{font-weight:590}
 .cnt{font-size:10.5px;color:var(--ink-3);font-weight:400;margin-left:6px}
-.lyrn{font-size:10.5px;color:var(--ink-3);font-weight:400;margin-left:8px;
- padding:1px 6px;border-radius:4px;background:var(--chipbg)}
+.lyrn{font-size:10.5px;color:var(--ink-3);font-weight:400;margin-left:8px;padding:1px 6px;
+ border-radius:4px;background:var(--chipbg)}
 td.lyrc{color:var(--ink-2);font-weight:600;cursor:help}
 th.lyr{text-align:right}
 .sen{font-size:10.5px;color:var(--ink-3)}
@@ -688,43 +587,23 @@ tr.comp td{border-bottom:1px solid var(--rule)}
 .ssum{margin-left:auto;font-weight:400;color:var(--ink-2);font-size:11.5px}
 table.stk td,table.stk th{padding:5px 8px;font-size:12px}
 td.tk{font-weight:620}
-td.nm{color:var(--ink-2);max-width:190px;overflow:hidden;text-overflow:ellipsis}
+td.nm{color:var(--ink-2);max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .legend{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--ink-3);
  padding:9px 12px 10px;flex-wrap:wrap}
 .lramp{display:flex;height:9px;border-radius:5px;overflow:hidden;width:150px}
 .lramp span{flex:1}
 .sechd{display:flex;align-items:baseline;gap:11px;margin:22px 0 8px;flex-wrap:wrap}
 .sechd h2{font-size:13.5px;margin:0}
-.sechd p{margin:0;font-size:11.5px;color:var(--ink-3)}
-.sechd .tgl{margin-left:auto}
-body.anom tbody tr[data-anom="0"]{display:none}
-footer{margin-top:24px;color:var(--ink-3);font-size:11.5px;line-height:1.75}
-@media(max-width:640px){.wrap{padding:14px 10px 40px}h1{font-size:16px}
- .kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
+.sechd p{margin:0;font-size:11.5px;color:var(--ink-3);max-width:640px}
+.foot{margin-top:20px;color:var(--ink-3);font-size:11px}
+@media(max-width:640px){.wrap{padding:14px 10px 34px}h1{font-size:16px}
+ .kpis{grid-template-columns:repeat(2,1fr)}}
 """
 
 JS = """
-document.querySelectorAll('button.t[data-theme]').forEach(b=>b.onclick=()=>{
-  document.documentElement.dataset.theme=b.dataset.theme;
-  document.querySelectorAll('button.t[data-theme]').forEach(x=>x.setAttribute('aria-pressed',x===b));});
-const sb=document.getElementById('stackord');
-if(sb)sb.onclick=()=>{const on=sb.getAttribute('aria-pressed')!=='true';
-  sb.setAttribute('aria-pressed',on);
-  sb.textContent=on?'依名次排序':'依供應鏈層級排序';
-  document.querySelectorAll('table.main').forEach(tb=>{
-    const body=tb.tBodies[1];if(!body)return;
-    const rows=[...body.rows];
-    rows.sort((a,b)=>on
-      ?(+a.dataset.layer-+b.dataset.layer)||(+a.cells[0].innerText.trim().split(/\s/)[0]-+b.cells[0].innerText.trim().split(/\s/)[0])
-      :(+a.cells[0].innerText.trim().split(/\s/)[0]-+b.cells[0].innerText.trim().split(/\s/)[0]));
-    rows.forEach(r=>body.appendChild(r));});};
-const ab=document.getElementById('anom');
-ab.onclick=()=>{const on=!document.body.classList.contains('anom');
-  document.body.classList.toggle('anom',on);ab.setAttribute('aria-pressed',on);
-  ab.textContent=on?'顯示全部':'只顯示有訊號的';};
 document.querySelectorAll('table.main thead tr.h th').forEach((th,i)=>{
   if(th.classList.contains('nosort'))return;
-  th.onclick=()=>{const tb=th.closest('table').tBodies[1]||th.closest('table').tBodies[0];
+  th.onclick=()=>{const tb=th.closest('table').tBodies[1];if(!tb)return;
     const rows=[...tb.rows];const asc=th.dataset.asc!=='1';th.dataset.asc=asc?'1':'0';
     const num=t=>{const v=parseFloat(t.replace(/[^0-9.+-]/g,''));return isNaN(v)?-1e9:v;};
     rows.sort((a,b)=>{const x=num(a.cells[i].innerText),y=num(b.cells[i].innerText);
@@ -738,37 +617,23 @@ HTML = f"""<!DOCTYPE html>
 <style>{CSS}</style></head><body><div class="wrap">
 <header><h1>美股半導體板塊資金輪動</h1>
   <div class="meta">資料日 {D["asof"]}（美股收盤）· 產生於 {D["generated"]}</div>
-  <div class="tgl"><button class="t" data-theme="light" aria-pressed="false">淺色</button>
-  <button class="t" data-theme="dark" aria-pressed="false">深色</button></div></header>
+</header>
 
-<div class="hero"><h2>今日重點</h2><ul class="dgl">{DIGEST}</ul></div>
+<div class="card"><h2>板塊排名遷移</h2>
+  <p class="hint">依 1 週報酬排名。左為 3 個交易日前，右為最新。紅線往上＝名次爬升，藍線往下＝退位。</p>
+  {slope_chart(S)}</div>
 
-<div class="kpis">{KPIS}</div>
-
-<div class="grid2">
-  <div class="card"><h2>板塊排名遷移</h2>
-    <p class="hint">依 1 週報酬排名。左為 3 個交易日前，右為最新。線往上＝資金流進，往下＝撤出。</p>
-    {slope_chart(S)}</div>
-  <div class="card"><h2>成交額佔比變化</h2>
-    <p class="hint">各板塊今日成交金額佔 {len(S)} 大半導體板塊總額的比重，減去其 20 日平均（百分點）。
-    這欄比報酬率誠實——有時候板塊在漲，錢卻在退。</p>
-    {flow_chart(S)}</div>
-</div>
-
-<div class="sechd"><h2>半導體板塊</h2><p>等權每日再平衡 · 共 {sum(s["n"] for s in S)} 檔</p>
-  <div class="tgl"><button class="t" id="stackord" aria-pressed="false">依供應鏈層級排序</button>
-  <button class="t" id="anom" aria-pressed="false">只顯示有訊號的</button></div></div>
+<div class="sechd"><h2>半導體板塊</h2><p>等權每日再平衡 · 共 {sum(s["n"] for s in S)} 檔</p></div>
 <div class="card" style="padding:0 4px 0">
 <div class="tw"><table class="main"><thead>{HEAD}</thead>
 <tbody>{ref_row("半導體整體", f"本表 {sum(s['n'] for s in S)} 檔等權", C, C["breadth"])}
-{ref_row("SMH", "半導體 ETF · 基準", B["SMH"])}
-{ref_row("SPY", "S&P 500 · 大盤", B["SPY"])}</tbody>
+{ref_row("SMH", "半導體 ETF · 基準", B["SMH"])}</tbody>
 <tbody>{sector_rows(S)}</tbody></table></div>
 <div class="legend"><span>弱</span><div class="lramp">{ramp}</div><span>強</span>
   <span style="margin-left:8px">點欄位標題可排序 · 板塊名稱下的標籤可滑鼠停留看說明</span></div></div>
 
-<div class="sechd"><h2>外圍資金池</h2>
-  <p>判斷錢是否整片離開半導體 · 共 {sum(s["n"] for s in O)} 檔</p></div>
+<div class="sechd"><h2>其他 AI 板塊</h2>
+  <p>只有半導體動、這邊沒動 ＝ 半導體自己的事；一起動 ＝ 真的 AI 題材。共 {sum(s["n"] for s in O)} 檔</p></div>
 <div class="card" style="padding:0 4px 0">
 <div class="tw"><table class="main"><thead>{HEAD}</thead>
 <tbody>{ref_row("SPY", "S&P 500 · 大盤", B["SPY"])}</tbody>
@@ -777,20 +642,34 @@ HTML = f"""<!DOCTYPE html>
 <div class="sechd"><h2>個股明細</h2><p>點開展開</p></div>
 {stock_blocks(S, "")}{stock_blocks(O, "外圍 ")}
 
-<footer>
-<b>怎麼用</b>：每天看最上面「今日重點」三行就夠；有句話讓你在意，再看下面的圖表。
-板塊名稱下方的標籤（縮量、爆量、個股行情、過熱…）就是該板塊當天的重點，滑鼠停留看細節。<br><br>
-· <b>名次 / Δ3日</b>：依 1 週報酬排序。▲＝3 個交易日內名次上升，是輪動最直接的訊號。<br>
-· <b>成交額佔比 / Δ佔比</b>：該板塊成交金額佔全部板塊總成交額的比重，以及它比自己過去 20 日平均高出或低於多少個百分點。<b>報酬為正但 Δ佔比為負 ＝ 縮量反彈。</b><br>
-· <b>廣度</b>：板塊內站上 20 日均線的成分股比例。80%↑ 是全面性行情，30%↓ 通常只有一兩檔在撐。<br>
-· <b>波動率</b>：板塊指數近 20 日報酬標準差年化。數字高代表這個板塊現在很躁動，進出要抓更寬的停損。<br>
-· <b>半導體整體 / SMH / SPY</b>：表格最上方三列參照。板塊漲 8%、SMH 漲 7.8%，代表它只是跟著大盤走。<br><br>
-分類原則採<b>股價驅動因素</b>而非產業鏈位置：AVGO 歸算力晶片、AXTI 歸光通訊、NOK 歸網通、ARM 歸 EDA/IP。
-NVDA 同時在算力晶片與七巨頭，分屬不同表，不影響排名。<br>
-資料來源：Yahoo Finance 日線（報酬採還原權值價）。本表為量化統計，非投資建議。
-{"<br>抓取失敗：" + ", ".join(D["failed"]) if D["failed"] else ""}
-</footer>
+<div class="foot">Yahoo Finance 日線 · 還原權值價{
+  "　|　抓取失敗：" + ", ".join(D["failed"]) if D["failed"] else ""}</div>
 </div><script>{JS}</script></body></html>"""
+
+# --- guard: header and body column counts must match in every table, or fail loudly
+import re as _re
+def _check(page):
+    bad = []
+    for tbl in _re.findall(r"<table[^>]*>.*?</table>", page, _re.S):
+        name = "main" if 'class="main"' in tbl else "stk"
+        heads = _re.findall(r"<tr class=\"h\">(.*?)</tr>", tbl, _re.S) or \
+                _re.findall(r"<thead>.*?<tr>(.*?)</tr>", tbl, _re.S)
+        if not heads:
+            continue
+        ncol = len(_re.findall(r"<th", heads[0]))
+        body = tbl[tbl.find("<tbody"):]
+        for row in _re.findall(r"<tr[^>]*>(.*?)</tr>", body, _re.S):
+            n = len(_re.findall(r"<td", row))
+            if n and n != ncol:
+                bad.append((name, ncol, n, _re.sub(r"<[^>]+>", " ", row)[:60].strip()))
+    return bad
+
+_bad = _check(HTML)
+if _bad:
+    for x in _bad[:8]:
+        print("COLUMN MISMATCH", x)
+    raise SystemExit(f"aborting: {len(_bad)} misaligned rows")
+print("column check OK")
 
 open(OUT_HTML, "w").write(HTML)
 json.dump(D, open(OUT_JSON, "w"), ensure_ascii=False)
