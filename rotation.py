@@ -300,7 +300,6 @@ def build():
 
     return {
         "asof": str(asof.date()),
-        "generated": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M TPE"),
         "sectors": allrows, "composite": composite,
         "bench": bench, "failed": failed, "windows": list(WINDOWS.keys()),
     }
@@ -722,7 +721,7 @@ HTML = f"""<!DOCTYPE html>
 <title>美股半導體板塊資金輪動 · {D["asof"]}</title>
 <style>{CSS}</style></head><body><div class="wrap">
 <header><h1>美股半導體板塊資金輪動</h1>
-  <div class="meta">資料日 {D["asof"]}（美股收盤）· 產生於 {D["generated"]}</div>
+  <div class="meta">資料日 {D["asof"]}（美股收盤）</div>
 </header>
 
 <div class="hero"><h2>方向判讀 <span class="hnote">規則判讀，非投資建議</span></h2>
