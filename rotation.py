@@ -16,7 +16,7 @@ SECTORS = {
     "晶圓代工/封測": ["TSM", "INTC", "GFS", "UMC", "AMKR", "ASX"],
     "半導體設備":    ["AMAT", "LRCX", "KLAC", "ASML", "TER", "ONTO", "ACMR", "CAMT"],
     "記憶體/儲存":   ["MU", "SNDK", "WDC", "STX", "SIMO"],
-    "光通訊/CPO":    ["COHR", "LITE", "AAOI", "FN", "POET", "AXTI"],
+    "光通訊/CPO":    ["COHR", "LITE", "AAOI", "FN", "POET", "AXTI", "TSEM"],
     "高速互連/網通": ["ANET", "CRDO", "ALAB", "CIEN", "CSCO", "NOK"],
     "類比/功率/被動":["TXN", "ADI", "ON", "MPWR", "NXPI", "STM", "MCHP", "WOLF", "VSH"],
 }
