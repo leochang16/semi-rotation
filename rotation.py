@@ -15,9 +15,9 @@ SECTORS = {
     "算力晶片":      ["NVDA", "AMD", "AVGO", "MRVL"],
     "晶圓代工/封測": ["TSM", "INTC", "GFS", "UMC", "AMKR", "ASX"],
     "半導體設備":    ["AMAT", "LRCX", "KLAC", "ASML", "TER", "ONTO", "ACMR", "CAMT"],
-    "記憶體/儲存":   ["MU", "SNDK", "WDC", "STX", "SIMO"],
-    "光通訊/CPO":    ["COHR", "LITE", "AAOI", "FN", "POET", "AXTI", "TSEM"],
-    "高速互連/網通": ["ANET", "CRDO", "ALAB", "CIEN", "CSCO", "NOK"],
+    "記憶體/儲存":   ["MU", "SKHY", "SNDK", "WDC", "STX", "SIMO"],
+    "光通訊/CPO":    ["COHR", "LITE", "AAOI", "FN", "POET", "AXTI", "TSEM", "NOK"],
+    "高速互連/網通": ["ANET", "CRDO", "ALAB", "CIEN", "CSCO"],
     "類比/功率/被動":["TXN", "ADI", "ON", "MPWR", "NXPI", "STM", "MCHP", "WOLF", "VSH"],
 }
 OUTER = {
@@ -25,7 +25,7 @@ OUTER = {
     "AI 軟體/應用":     ["PLTR", "NOW", "SNOW", "MDB", "DDOG", "CRM", "ORCL", "TEAM"],
     "資安":             ["CRWD", "PANW", "ZS", "FTNT", "S", "RBRK", "OKTA", "NET"],
     "電力/散熱基建":    ["VRT", "ETN", "GEV", "PWR", "MOD", "NVT", "CEG", "VST", "OKLO"],
-    "機器人/實體 AI":   ["ROK", "ZBRA", "OUST", "CGNX", "AMBA", "SYM", "SERV", "MBLY"],
+    "機器人/實體 AI":   ["ROK", "ZBRA", "OUST", "CGNX", "AMBA", "SYM", "SERV", "MBLY", "CCXI"],
     "七巨頭":           ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
 }
 SECTOR_EN = {
