@@ -7,7 +7,7 @@ on:
     - cron: "23 1 * * 2-6"
     - cron: "47 2 * * 2-6"
     - cron: "13 5 * * 2-6"
-    - cron: "37 9 * * 2-6"→ Runs at 05:30, Tuesday through Saturday
+    - cron: "37 9 * * 2-6"
 
   workflow_dispatch: {}
 
