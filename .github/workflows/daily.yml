@@ -2,13 +2,15 @@ name: 每日更新半導體板塊輪動
 
 on:
   schedule:
-    # 分鐘刻意避開 :00 / :30（GitHub 排程在整點與半點最容易被延遲或整次跳過）
-    - cron: "7 0 * * 2-6"
-    - cron: "23 1 * * 2-6"
-    - cron: "47 2 * * 2-6"
-    - cron: "13 5 * * 2-6"
-    - cron: "37 9 * * 2-6"
-
+    # 美股 20:00 UTC 收盤（台北 04:00）。收盤後立刻開始跑，不等隔天早上。
+    # GitHub 排程是 best-effort，實測會延遲 1～2.5 小時，所以前四班刻意擠在一起，
+    # 只要任何一班準時或小延遲，台北早上六、七點就有資料。分鐘避開 :00 / :30。
+    - cron: "51 20 * * 1-5"   # 台北 04:51
+    - cron: "37 21 * * 1-5"   # 台北 05:37
+    - cron: "23 22 * * 1-5"   # 台北 06:23
+    - cron: "9 23 * * 1-5"    # 台北 07:09
+    - cron: "13 1 * * 2-6"    # 台北 09:13（保險）
+    - cron: "47 3 * * 2-6"    # 台北 11:47（保險）
   workflow_dispatch: {}
 
 permissions:
@@ -39,12 +41,13 @@ jobs:
 
       - name: 提交結果
         run: |
+          ASOF=$(python -c "import json;print(json.load(open('data.json'))['asof'])")
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html data.json
           if git diff --staged --quiet; then
-            echo "沒有變化，略過提交"
+            echo "資料未變（最新交易日 $ASOF 已發布），略過提交"
           else
-            git commit -m "更新至 $(date -u +%Y-%m-%d) 收盤資料"
+            git commit -m "更新至 $ASOF 收盤資料"
             git push
           fi
