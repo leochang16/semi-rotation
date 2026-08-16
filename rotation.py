@@ -505,7 +505,7 @@ def stock_blocks(rows, tier):
                 + f'<td class="num"><span class="chip {"hot" if x["volr"]>=1.5 else ""}">'
                   f'{x["volr"]:.2f}×</span></td>'
                   f'<td class="num">{x["f52"]:+.1f}%</td>'
-                  f'<td class="num"><span class="chip {"hot" if x["rsi"]>=70 else ("cold" if x["rsi"]<=30 else "")}">'
+                  f'<td class="num"><span class="chip {"hot" if x["rsi"]>80 else ""}">'
                   f'{x["rsi"]:.0f}</span></td>'
                   f'<td class="num">{"✓" if x["a20"] else "·"}</td></tr>')
         out.append(
@@ -518,7 +518,7 @@ def stock_blocks(rows, tier):
             f'<th class="num">1M</th>'
             f'<th class="num" title="今日成交額 ÷ 自身 20 日均量">量能</th>'
             f'<th class="num">距52週高</th>'
-            f'<th class="num" title="RSI(14)。≥70 超買、≤30 超賣。">RSI</th>'
+            f'<th class="num" title="RSI(14)。只標 &gt;80——回測中唯一報酬翻負的區間。70-80 反而是表現最好的一段，不是警訊；&lt;30 絕對報酬也不差。">RSI</th>'
             f'<th class="num" title="收盤價是否站上 20 日均線">&gt;20MA</th>'
             f'</tr></thead><tbody>{"".join(trs)}</tbody></table></div></details>')
     return "".join(out)
