@@ -195,8 +195,9 @@ def build():
                     for lbl, n in WINDOWS.items()} for s in groups}).T
 
         rs_now, rs_3ago = rs_at(0), rs_at(3)
-        rank_now = rs_now["1W"].rank(ascending=False, method="min").astype(int)
-        rank_3ago = rs_3ago["1W"].rank(ascending=False, method="min").astype(int)
+        RANK_WIN = "1M"   # 20 交易日。5 日窗實測不穩且無預測力，20 日才站得住。
+        rank_now = rs_now[RANK_WIN].rank(ascending=False, method="min").astype(int)
+        rank_3ago = rs_3ago[RANK_WIN].rank(ascending=False, method="min").astype(int)
 
         i = n_last
         out = []
@@ -732,7 +733,7 @@ HTML = f"""<!DOCTYPE html>
 <div class="kpis">{KPIS}</div>
 
 <div class="card"><h2>板塊排名遷移</h2>
-  <p class="hint">依 1 週報酬排名。左為 3 個交易日前，右為最新。紅線往上＝名次爬升，藍線往下＝退位。</p>
+  <p class="hint">依 1 個月（20 交易日）報酬排名。左為 3 個交易日前，右為最新。紅線往上＝名次爬升，藍線往下＝退位。</p>
   {slope_chart(S)}</div>
 
 <div class="sechd"><h2>板塊總表</h2><p>等權每日再平衡 · {sum(1 for s in S if s["cat"]=="半導體")} 個半導體板塊 + {sum(1 for s in S if s["cat"]=="其他 AI")} 個其他 AI 板塊 · 共 {sum(s["n"] for s in S)} 檔</p></div>
