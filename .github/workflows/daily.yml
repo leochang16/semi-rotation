@@ -2,15 +2,17 @@ name: 每日更新半導體板塊輪動
 
 on:
   schedule:
-    # 美股 20:00 UTC 收盤（台北 04:00）。收盤後立刻開始跑，不等隔天早上。
-    # GitHub 排程是 best-effort，實測會延遲 1～2.5 小時，所以前四班刻意擠在一起，
-    # 只要任何一班準時或小延遲，台北早上六、七點就有資料。分鐘避開 :00 / :30。
+    # 美股 20:00 UTC 收盤（台北 04:00）。分鐘避開 :00 / :30。
+    # 時段拉長到整個上午：Yahoo 有時會對資料中心 IP 回舊快照，多幾次機會補救。
     - cron: "51 20 * * 1-5"   # 台北 04:51
     - cron: "37 21 * * 1-5"   # 台北 05:37
     - cron: "23 22 * * 1-5"   # 台北 06:23
     - cron: "9 23 * * 1-5"    # 台北 07:09
-    - cron: "13 1 * * 2-6"    # 台北 09:13（保險）
-    - cron: "47 3 * * 2-6"    # 台北 11:47（保險）
+    - cron: "13 1 * * 2-6"    # 台北 09:13
+    - cron: "47 3 * * 2-6"    # 台北 11:47
+    - cron: "29 5 * * 2-6"    # 台北 13:29
+    - cron: "41 7 * * 2-6"    # 台北 15:41
+    - cron: "19 11 * * 2-6"   # 台北 19:19
   workflow_dispatch: {}
 
 permissions:
@@ -33,8 +35,21 @@ jobs:
       - name: 安裝相依套件
         run: pip install --quiet pandas numpy
 
-      - name: 產生儀表板
-        run: python rotation.py
+      - name: 產生儀表板（資料日沒前進就重試）
+        run: |
+          OLD=$(python -c "import json;print(json.load(open('data.json'))['asof'])" 2>/dev/null || echo none)
+          echo "已發布的資料日：$OLD"
+          for i in 1 2 3 4; do
+            python rotation.py
+            NEW=$(python -c "import json;print(json.load(open('data.json'))['asof'])")
+            echo "第 $i 次產生 → $NEW"
+            if [ "$NEW" != "$OLD" ]; then
+              echo "資料已前進到 $NEW"
+              exit 0
+            fi
+            [ $i -lt 4 ] && { echo "與已發布相同，90 秒後重試"; sleep 90; }
+          done
+          echo "::warning title=資料未前進::重試 4 次後資料日仍是 $NEW。若今天美股有開盤，代表上游（Yahoo）給這台主機的是舊快照，等下一個排程時段。"
         env:
           OUT_HTML: index.html
           OUT_JSON: data.json
