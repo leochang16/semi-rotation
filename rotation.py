@@ -447,7 +447,7 @@ HEAD = """<tr class="h">
 <th class="num">1D</th><th class="num">3D</th><th class="num">1W</th><th class="num">1M</th>
 <th class="num sep" title="（板塊今日成交額 ÷ 自身 20 日均量）÷ 全表平均。&gt;1 代表這板塊放量放得比大盤兇。">相對量能</th>
 <th class="num sep" title="板塊內站上 20 日均線的成分股比例">廣度<br><span class="th2">&gt;20MA</span></th>
-<th class="num" title="板塊指數近 20 日報酬標準差年化。抓停損寬度用。">波動率<br><span class="th2">20日年化</span></th></tr>"""
+<th class="num" title="由近 20 日報酬標準差換算。上＝單日常態波動幅度，下＝一週。抓停損寬度和部位大小用。">預期波動<br><span class="th2">單日 / 一週</span></th></tr>"""
 
 def ref_row(name, note, d, breadth=None):
     tds = ['<td class="rk">—</td>',
@@ -458,7 +458,7 @@ def ref_row(name, note, d, breadth=None):
     tds.append('<td class="num sep">—</td>')
     tds.append(f'<td class="num sep">{breadth:.0f}%</td>' if breadth is not None
                else '<td class="num sep">—</td>')
-    tds.append(f'<td class="num">{d["vol20"]:.0f}%</td>')
+    tds.append(f'<td class="num">±{d["vol20"]/15.875:.1f}%<br><span class="th2">±{d["vol20"]/7.211:.1f}%</span></td>')
     return f'<tr class="comp">{"".join(tds)}</tr>'
 
 def sector_rows(rows):
@@ -486,7 +486,7 @@ def sector_rows(rows):
         bd = s["breadth"]
         r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
                  f'<span class="bn">{bd:.0f}%</span></td>')
-        r.append(f'<td class="num dim">{s["vol20"]:.0f}%</td>')
+        r.append(f'<td class="num">±{s["vol20"]/15.875:.1f}%<br><span class="th2 dim">±{s["vol20"]/7.211:.1f}%</span></td>')
         out.append("".join(r) + "</tr>")
     return "".join(out)
 
