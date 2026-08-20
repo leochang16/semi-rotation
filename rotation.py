@@ -450,7 +450,7 @@ HEAD = """<tr class="h">
 <th class="num">1D</th><th class="num">3D</th><th class="num">1W</th><th class="num">1M</th>
 <th class="num sep" title="（板塊今日成交額 ÷ 自身 20 日均量）÷ 全表平均。&gt;1 代表這板塊放量放得比大盤兇。">相對量能</th>
 <th class="num sep" title="板塊內站上 20 日均線的成分股比例">廣度<br><span class="th2">&gt;20MA</span></th>
-<th class="num" title="近 20 日報酬的標準差 σ（下方為 σ×√5 的一週推估）。約 8 成的交易日會落在 ±σ 內，不是平均變動幅度——平常大約只動一半。抓停損寬度用：停損設得比它窄，會被日常波動掃掉。↑=近 20 日波動比近 60 日高過 25%，代表現在數字偏高、之後多半回落；↓=低於 20%，代表現在偏低、之後多半回升。">預期波動<br><span class="th2">單日 σ / 一週</span></th></tr>"""
+<th class="num" title="近 20 日報酬的標準差 σ（下方為 σ×√5 的一週推估）。約 8 成的交易日會落在 ±σ 內，不是平均變動幅度——平常大約只動一半。抓停損寬度用：停損設得比它窄，會被日常波動掃掉。標「偏高」＝這個 σ 被近期一段劇烈行情灌大了，波動率會均值回歸，接下來多半回落，照它設停損會太寬。標「偏低」＝目前異常平靜，之後多半回升，照它設停損會被掃掉——這個比較危險。">預期波動<br><span class="th2">單日 σ / 一週</span></th></tr>"""
 
 def ref_row(name, note, d, breadth=None):
     tds = ['<td class="rk">—</td>',
@@ -490,7 +490,8 @@ def sector_rows(rows):
         r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
                  f'<span class="bn">{bd:.0f}%</span></td>')
         vt = s.get("vol_trend", 1.0)
-        mk = ' <span class="vt up">↑</span>' if vt >= 1.25 else (' <span class="vt down">↓</span>' if vt <= 0.80 else "")
+        mk = (' <span class="vt hi">偏高</span>' if vt >= 1.25
+              else ' <span class="vt lo">偏低</span>' if vt <= 0.80 else "")
         r.append(f'<td class="num">±{s["vol20"]/15.875:.1f}%{mk}<br><span class="th2 dim">±{s["vol20"]/7.211:.1f}%</span></td>')
         out.append("".join(r) + "</tr>")
     return "".join(out)
@@ -655,9 +656,9 @@ th,td{padding:7px 8px;text-align:left;white-space:nowrap;border-bottom:1px solid
 thead th{position:sticky;top:0;background:var(--surf);z-index:2;font-size:11px;color:var(--ink-3);
  font-weight:600;border-bottom:1px solid var(--rule);cursor:pointer;user-select:none}
 .th2{font-weight:400}
-.vt{font-size:11px;font-weight:700}
-.vt.up{color:var(--up)}
-.vt.down{color:var(--down)}
+.vt{font-size:10px;font-weight:600;padding:0 4px;border-radius:3px;vertical-align:1px}
+.vt.hi{background:rgba(255,255,255,.08);color:var(--ink-3)}
+.vt.lo{background:rgba(250,178,25,.18);color:var(--warn)}
 td.num,th.num{text-align:right}
 td.heat{background:var(--bg);color:var(--fg);font-weight:520}
 .sep{border-left:1px solid var(--grid)}
