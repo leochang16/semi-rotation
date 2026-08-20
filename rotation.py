@@ -233,6 +233,7 @@ def build():
                 "from_52wh": float((idx_ew.iloc[-1] / w52.max() - 1) * 100),
                 "rsi": float(rsi(idx_ew).iloc[-1]),
                 "vol20": float(idx_ew.pct_change().iloc[-20:].std() * (252 ** 0.5) * 100),
+                "vol60": float(idx_ew.pct_change().iloc[-60:].std() * (252 ** 0.5) * 100),
                 "vol_trend": float(idx_ew.pct_change().iloc[-20:].std()
                                    / idx_ew.pct_change().iloc[-60:].std())
                               if idx_ew.pct_change().iloc[-60:].std() > 0 else 1.0,
@@ -490,8 +491,11 @@ def sector_rows(rows):
         r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
                  f'<span class="bn">{bd:.0f}%</span></td>')
         vt = s.get("vol_trend", 1.0)
-        mk = (' <span class="vt hi">偏高</span>' if vt >= 1.25
-              else ' <span class="vt lo">偏低</span>' if vt <= 0.80 else "")
+        v6 = s.get("vol60", 0) / 15.875
+        v2 = s["vol20"] / 15.875
+        tip = f"20日 σ {v2:.2f}% ÷ 60日 σ {v6:.2f}% = {vt:.2f}"
+        mk = (f' <span class="vt hi" title="{tip}｜≥1.25 判定偏高">偏高</span>' if vt >= 1.25
+              else f' <span class="vt lo" title="{tip}｜≤0.80 判定偏低">偏低</span>' if vt <= 0.80 else "")
         r.append(f'<td class="num">±{s["vol20"]/15.875:.1f}%{mk}<br><span class="th2 dim">±{s["vol20"]/7.211:.1f}%</span></td>')
         out.append("".join(r) + "</tr>")
     return "".join(out)
@@ -656,7 +660,7 @@ th,td{padding:7px 8px;text-align:left;white-space:nowrap;border-bottom:1px solid
 thead th{position:sticky;top:0;background:var(--surf);z-index:2;font-size:11px;color:var(--ink-3);
  font-weight:600;border-bottom:1px solid var(--rule);cursor:pointer;user-select:none}
 .th2{font-weight:400}
-.vt{font-size:10px;font-weight:600;padding:0 4px;border-radius:3px;vertical-align:1px}
+.vt{font-size:10px;cursor:help;font-weight:600;padding:0 4px;border-radius:3px;vertical-align:1px}
 .vt.hi{background:rgba(255,255,255,.08);color:var(--ink-3)}
 .vt.lo{background:rgba(250,178,25,.18);color:var(--warn)}
 td.num,th.num{text-align:right}
