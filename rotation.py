@@ -233,6 +233,9 @@ def build():
                 "from_52wh": float((idx_ew.iloc[-1] / w52.max() - 1) * 100),
                 "rsi": float(rsi(idx_ew).iloc[-1]),
                 "vol20": float(idx_ew.pct_change().iloc[-20:].std() * (252 ** 0.5) * 100),
+                "vol_trend": float(idx_ew.pct_change().iloc[-20:].std()
+                                   / idx_ew.pct_change().iloc[-60:].std())
+                              if idx_ew.pct_change().iloc[-60:].std() > 0 else 1.0,
                 "corr_nvda": float(idx_ew.pct_change().iloc[-20:].corr(ret["NVDA"].iloc[-20:])),
                 "spark": [float(x) for x in (idx_ew.iloc[-30:] / idx_ew.iloc[-30] * 100)],
             }
@@ -447,7 +450,7 @@ HEAD = """<tr class="h">
 <th class="num">1D</th><th class="num">3D</th><th class="num">1W</th><th class="num">1M</th>
 <th class="num sep" title="（板塊今日成交額 ÷ 自身 20 日均量）÷ 全表平均。&gt;1 代表這板塊放量放得比大盤兇。">相對量能</th>
 <th class="num sep" title="板塊內站上 20 日均線的成分股比例">廣度<br><span class="th2">&gt;20MA</span></th>
-<th class="num" title="由近 20 日報酬標準差換算。上＝單日常態波動幅度，下＝一週。抓停損寬度和部位大小用。">預期波動<br><span class="th2">單日 / 一週</span></th></tr>"""
+<th class="num" title="近 20 日報酬的標準差 σ（下方為 σ×√5 的一週推估）。約 8 成的交易日會落在 ±σ 內，不是平均變動幅度——平常大約只動一半。抓停損寬度用：停損設得比它窄，會被日常波動掃掉。↑=近 20 日波動比近 60 日高過 25%，代表現在數字偏高、之後多半回落；↓=低於 20%，代表現在偏低、之後多半回升。">預期波動<br><span class="th2">單日 σ / 一週</span></th></tr>"""
 
 def ref_row(name, note, d, breadth=None):
     tds = ['<td class="rk">—</td>',
@@ -486,7 +489,9 @@ def sector_rows(rows):
         bd = s["breadth"]
         r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
                  f'<span class="bn">{bd:.0f}%</span></td>')
-        r.append(f'<td class="num">±{s["vol20"]/15.875:.1f}%<br><span class="th2 dim">±{s["vol20"]/7.211:.1f}%</span></td>')
+        vt = s.get("vol_trend", 1.0)
+        mk = ' <span class="vt up">↑</span>' if vt >= 1.25 else (' <span class="vt down">↓</span>' if vt <= 0.80 else "")
+        r.append(f'<td class="num">±{s["vol20"]/15.875:.1f}%{mk}<br><span class="th2 dim">±{s["vol20"]/7.211:.1f}%</span></td>')
         out.append("".join(r) + "</tr>")
     return "".join(out)
 
@@ -650,6 +655,9 @@ th,td{padding:7px 8px;text-align:left;white-space:nowrap;border-bottom:1px solid
 thead th{position:sticky;top:0;background:var(--surf);z-index:2;font-size:11px;color:var(--ink-3);
  font-weight:600;border-bottom:1px solid var(--rule);cursor:pointer;user-select:none}
 .th2{font-weight:400}
+.vt{font-size:11px;font-weight:700}
+.vt.up{color:var(--up)}
+.vt.down{color:var(--down)}
 td.num,th.num{text-align:right}
 td.heat{background:var(--bg);color:var(--fg);font-weight:520}
 .sep{border-left:1px solid var(--grid)}
