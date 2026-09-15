@@ -13,22 +13,24 @@ import numpy as np
 # ---------------------------------------------------------------- config
 SECTORS = {
     "算力晶片":      ["NVDA", "AVGO", "AMD", "MRVL", "ARM", "CBRS"],
-    "晶圓代工/封測": ["TSM", "INTC", "ASX", "UMC", "GFS", "AMKR"],
     "半導體設備":    ["ASML", "AMAT", "LRCX", "KLAC", "TER", "ONTO"],
     "記憶體/儲存":   ["MU", "SKHY", "SNDK", "STX", "WDC", "SIMO"],
     "光通訊/CPO":    ["COHR", "LITE", "NOK", "TSEM", "FN", "AAOI", "AXTI"],
     "高速互連/網通": ["CSCO", "ANET", "ALAB", "CRDO", "CIEN", "APH"],
-    "類比/功率/被動":["TXN", "ADI", "MPWR", "NXPI", "MCHP", "ON"],
 }
 OUTER = {
     "AI 伺服器/ODM":    ["SMCI", "DELL", "HPE", "CLS", "FLEX", "JBL"],
     "Neocloud/AI 租賃": ["CRWV", "NBIS", "IREN", "APLD", "WULF", "CIFR"],
     "AI 軟體/應用":     ["PLTR", "ORCL", "CRM", "NOW", "SNOW", "DDOG", "TEAM"],
-    "資安":             ["PANW", "CRWD", "FTNT", "NET", "ZS", "OKTA"],
-    "電力/散熱基建":    ["GEV", "ETN", "VRT", "PWR", "CEG", "VST"],
-    "機器人/實體 AI":   ["ROK", "ZBRA", "SYM", "CGNX", "OUST", "CCXI"],
     "七巨頭":           ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
 }
+# 加密：幣本身對齊美股交易日（見 build()），幣股照一般股票處理
+CRYPTO = {
+    "BTC":  ["BTC-USD"],
+    "ETH":  ["ETH-USD"],
+    "幣股": ["COIN", "MSTR", "HOOD", "CRCL", "BMNR", "GLXY"],
+}
+COIN_TK = {"BTC-USD", "ETH-USD"}
 SECTOR_EN = {
     "算力晶片": "AI Compute", "晶圓代工/封測": "Foundry / OSAT",
     "半導體設備": "Semicap Equipment", "材料/零組件": "Materials / Subsystems",
@@ -40,6 +42,7 @@ SECTOR_EN = {
     "資安": "Cybersecurity", "電力/散熱基建": "Power & Thermal Infra",
     "機器人/實體 AI": "Robotics / Physical AI",
     "七巨頭": "Magnificent 7", "半導體整體": "Semis Composite",
+    "BTC": "Bitcoin", "ETH": "Ethereum", "幣股": "Crypto Equities",
 }
 # supply-chain position: downstream (end demand) -> upstream (materials).
 # The framework question is "which layer is getting paid now, and which later".
@@ -52,14 +55,16 @@ STACK = {
     "晶圓代工/封測": (5, "代工 / 封測"),
     "半導體設備":    (6, "設備"),
 }
-CATEGORY = {**{k: "半導體" for k in SECTORS}, **{k: "其他 AI" for k in OUTER}}
-ALL_GROUPS = {**SECTORS, **OUTER}
+CATEGORY = {**{k: "半導體" for k in SECTORS}, **{k: "其他 AI" for k in OUTER},
+            **{k: "加密" for k in CRYPTO}}
+ALL_GROUPS = {**SECTORS, **OUTER, **CRYPTO}
 BENCH = ["^SOX", "SPY"]
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
 
 ALL_TICKERS = sorted({t for v in SECTORS.values() for t in v}
-                     | {t for v in OUTER.values() for t in v} | set(BENCH))
+                     | {t for v in OUTER.values() for t in v}
+                     | {t for v in CRYPTO.values() for t in v} | set(BENCH))
 
 # ---------------------------------------------------------------- fetch
 def make_opener():
@@ -99,6 +104,38 @@ def fetch_chart(op, tk):
     df = df[~df.index.duplicated(keep="last")].dropna(subset=["adj"])
     df["name"] = d["meta"].get("shortName", tk)
     return df
+
+# ---------------------------------------------------------------- 備援來源
+# stockanalysis.com：免金鑰、還原慣例與 Yahoo 一致（實測 250 日最大日報酬差 0.007pp）。
+# 用途不是取代 Yahoo，是拿來「對帳」——Yahoo 對機房 IP 會安靜地餵舊資料，
+# 單一來源永遠不知道自己拿到的是不是昨天的。不支援指數與加密，那兩類仍靠 Yahoo。
+SA_SKIP = {"^SOX", "^NDX", "^GSPC"} | COIN_TK
+
+def fetch_sa(tk):
+    if tk in SA_SKIP:
+        raise ValueError("SA 不支援此標的")
+    hdr = dict(UA); hdr["Accept"] = "application/json"
+    last = None
+    for kind in ("s", "e"):                       # s=個股, e=ETF
+        u = (f"https://stockanalysis.com/api/symbol/{kind}/"
+             f"{urllib.parse.quote(tk.lower())}/history?range=5Y&period=Daily")
+        try:
+            rows = json.loads(urllib.request.urlopen(
+                urllib.request.Request(u, headers=hdr), timeout=30).read())["data"]
+            if not rows:
+                raise ValueError("空資料")
+            df = pd.DataFrame(rows)
+            df["t"] = pd.to_datetime(df["t"])
+            df = df.set_index("t").sort_index()
+            out = pd.DataFrame({"close": df["c"].astype(float),
+                                "adj": df["a"].astype(float),
+                                "volume": df["v"].astype(float)})
+            out = out[~out.index.duplicated(keep="last")].dropna(subset=["adj"])
+            out["name"] = tk
+            return out.iloc[-520:]
+        except Exception as e:
+            last = e
+    raise last
 
 def fetch_shares(op, crumb, tickers):
     out = {}
@@ -161,11 +198,72 @@ def build():
         time.sleep(0.25)
     info = fetch_shares(op, crumb, [t for t in ALL_TICKERS if t in charts])
 
+    # ---------------------------------------------------------- 雙來源對帳
+    # 抓第二份，比對「最新 bar 的日期」。Yahoo 餵舊資料時不會報錯，只有另一個
+    # 來源比它新才看得出來。價格也順便對一次，抓資料品質問題。
+    alt = {}
+    for tk in ALL_TICKERS:
+        if tk in SA_SKIP:
+            continue
+        try:
+            alt[tk] = fetch_sa(tk)
+        except Exception as e:
+            print("SA FAIL", tk, e, file=sys.stderr)
+        time.sleep(0.6)
+
+    def last_day(df):
+        return df.index[-1].date()
+
+    # 基準日只能用美股標的推。幣是 24 小時交易，現在已經有「今天」的 bar，
+    # 拿它當 consensus 會讓每一檔股票都被誤判成過期。
+    eq = [t for t in ALL_TICKERS if t not in SA_SKIP]
+    cand = ([last_day(charts[t]) for t in eq if t in charts]
+            + [last_day(alt[t]) for t in eq if t in alt])
+    consensus = max(cand) if cand else None
+
+    # 指數（^SOX）沒有備援，但仍該跟股票同一天；幣完全不納入判斷。
+    checkable = set(eq) | (SA_SKIP - COIN_TK)
+    y_stale = [t for t, d in charts.items() if t in checkable and last_day(d) < consensus]
+    a_stale = [t for t, d in alt.items() if last_day(d) < consensus]
+    swapped, mismatch = [], []
+    for tk, a in alt.items():
+        y = charts.get(tk)
+        if y is None or last_day(y) < last_day(a):
+            a["name"] = (y["name"].iloc[0] if y is not None else tk)
+            charts[tk] = a                      # Yahoo 落後，改用備援
+            swapped.append(tk)
+            if tk in failed:
+                failed.remove(tk)
+        elif last_day(y) == last_day(a):
+            py, pa = float(y["adj"].iloc[-1]), float(a["adj"].iloc[-1])
+            if pa and abs(py / pa - 1) > 0.005:  # 同一天但價差 >0.5%
+                mismatch.append(f"{tk} {py:.2f}/{pa:.2f}")
+
+    health = {
+        "consensus": str(consensus),
+        "alt_ok": len(alt),
+        "alt_expected": len(eq),
+        "yahoo_stale": sorted(y_stale),
+        "alt_stale": sorted(a_stale),
+        "swapped": sorted(swapped),
+        "mismatch": mismatch,
+        "both_stale": bool(set(y_stale) & set(a_stale)),
+    }
+    print("HEALTH " + json.dumps(health, ensure_ascii=False), file=sys.stderr)
+
     adj = pd.DataFrame({t: c["adj"] for t, c in charts.items()})
     raw = pd.DataFrame({t: c["close"] for t, c in charts.items()})
     vol = pd.DataFrame({t: c["volume"] for t, c in charts.items()})
-    adj = adj.sort_index().ffill(limit=3)
-    dv = (raw * vol).sort_index()                     # dollar volume
+    # 幣是 365 天、股票 252 天。若不對齊，所有 N 日窗口的意義會被幣的週末 bar 扭曲。
+    # 統一 reindex 到 SPY 的美股交易日曆：幣的週一 1D ＝ 週五收盤→週一收盤（本來就含週末）。
+    cal = charts["SPY"].index.sort_values()
+    # 成交額先在原始日曆上算，再把幣的週末量併進下一個交易日，否則週一量被低估
+    _dv = (raw.sort_index() * vol.sort_index()).sort_index()
+    _pos = cal.searchsorted(_dv.index, side="left")
+    _keep = _pos < len(cal)
+    dv = _dv[_keep].groupby(cal[_pos[_keep]]).sum().reindex(cal)
+    adj = adj.sort_index().ffill(limit=3).reindex(cal)
+    raw = raw.sort_index().ffill(limit=3).reindex(cal)
     ret = adj.pct_change()
 
     dates = adj.index
@@ -210,6 +308,7 @@ def build():
             dvs = sec_dv[s]
             rec = {
                 "sector": s, "sector_en": SECTOR_EN.get(s, s), "n": len(tks),
+                "single": len(tks) == 1,
                 "layer": STACK.get(s, (99, ""))[0], "layer_name": STACK.get(s, (99, ""))[1],
                 "cat": CATEGORY.get(s, ""),
                 "bench": bench_tk,
@@ -309,6 +408,7 @@ def build():
         "asof": str(asof.date()),
         "sectors": allrows, "composite": composite,
         "bench": bench, "failed": failed, "windows": list(WINDOWS.keys()),
+        "health": health,
     }
 
 
@@ -383,14 +483,15 @@ def signals(s):
     if s["rel_vol"] >= 1.3:
         out.append(("up", "爆量",
                     f'相對量能 {s["rel_vol"]:.2f}×（自身量能 {s["vol_ratio"]:.2f}× 對比全表平均）'))
-    if s["ret"]["1W"] > 2 and s["breadth"] <= 40:
+    solo = bool(s.get("single"))          # 單一資產：廣度/離散度無意義，相關標籤全部不發
+    if not solo and s["ret"]["1W"] > 2 and s["breadth"] <= 40:
         out.append(("warn", "個股行情",
                     f'只有 {s["breadth"]:.0f}% 成分股站上 20MA，不是板塊性行情'))
-    if s["breadth"] >= 90:
+    if not solo and s["breadth"] >= 90:
         out.append(("up", "全面性", f'{s["breadth"]:.0f}% 成分股站上 20MA'))
-    if s["breadth"] <= 15:
+    if not solo and s["breadth"] <= 15:
         out.append(("down", "全面走弱", f'僅 {s["breadth"]:.0f}% 成分股站上 20MA'))
-    spread = s.get("cap_minus_ew", 0.0)
+    spread = 0.0 if solo else s.get("cap_minus_ew", 0.0)
     if spread <= -3:
         out.append(("up", "小型領漲",
                     f'等權比市值加權高 {abs(spread):.1f} pp——板塊內中小型股在領，龍頭沒跟上'))
@@ -488,8 +589,11 @@ def sector_rows(rows):
         r.append(f'<td class="num sep"><span class="chip {"hot" if rv>=1.3 else ("cold" if rv<=0.7 else "")}">'
                  f'{rv:.2f}×</span></td>')
         bd = s["breadth"]
-        r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
-                 f'<span class="bn">{bd:.0f}%</span></td>')
+        if s.get("single"):
+            r.append('<td class="num sep dim" title="單一資產，沒有成分股廣度可言">—</td>')
+        else:
+            r.append(f'<td class="num sep"><div class="bar"><i style="width:{bd:.0f}%"></i></div>'
+                     f'<span class="bn">{bd:.0f}%</span></td>')
         vt = s.get("vol_trend", 1.0)
         v6 = s.get("vol60", 0) / 15.875
         v2 = s["vol20"] / 15.875
@@ -521,7 +625,8 @@ def stock_blocks(rows, tier):
         out.append(
             f'<details class="sblock"><summary><span class="srk">{tier}#{s["rank"]}</span>'
             f'{html.escape(s["sector"])}<span class="ssum">1W {s["ret"]["1W"]:+.2f}% · '
-            f'廣度 {s["breadth"]:.0f}% · 相對量能 {s["rel_vol"]:.2f}×</span></summary>'
+            + ("" if s.get("single") else f'廣度 {s["breadth"]:.0f}% · ')
+            + f'相對量能 {s["rel_vol"]:.2f}×</span></summary>'
             f'<div class="tw"><table class="stk"><thead><tr><th>代號</th><th>名稱</th>'
             f'<th class="num" title="20 日平均成交金額——這檔能吃多少量不滑價">20日均額</th>'
             f'<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th>'
@@ -534,29 +639,38 @@ def stock_blocks(rows, tier):
     return "".join(out)
 
 # ---------------------------------------------------------------- 方向判讀
+def _bd_ok(z):
+    """單一資產沒有廣度，改用自身對 20MA 的位置做同等級的確認。"""
+    return z["vs_ma20"] > 0 if z.get("single") else z["breadth"] >= 60
+
+def _bd_txt(z):
+    if z.get("single"):
+        return f'{"站上" if z["vs_ma20"] > 0 else "跌破"} 20MA（{z["vs_ma20"]:+.1f}%）'
+    return f'廣度 {z["breadth"]:.0f}%'
+
 def read_out():
     """三行規則判讀。純粹把成立的條件攤開，不是進出場指令。"""
     out = []
 
     # 偏多：名次最前、且有量能與廣度確認
-    longs = [s for s in S if s["rel_vol"] >= 1.0 and s["breadth"] >= 60]
+    longs = [s for s in S if s["rel_vol"] >= 1.0 and _bd_ok(s)]
     lg = min(longs, key=lambda z: z["rank"]) if longs else min(S, key=lambda z: z["rank"])
-    ok = lg["rel_vol"] >= 1.0 and lg["breadth"] >= 60
+    ok = lg["rel_vol"] >= 1.0 and _bd_ok(lg)
     tp = lg["stocks"][0]
     if ok:
         txt = (f'<b>{html.escape(lg["sector"])}</b> 三個條件都成立：1W {lg["ret"]["1W"]:+.1f}%、'
-               f'相對量能 {lg["rel_vol"]:.2f}×、廣度 {lg["breadth"]:.0f}%。'
+               f'相對量能 {lg["rel_vol"]:.2f}×、{_bd_txt(lg)}。'
                f'領頭 {tp["ticker"]} {tp["r5"]:+.1f}%。')
     else:
         txt = (f'<b>{html.escape(lg["sector"])}</b> 名次第一但確認不足：'
-               f'相對量能 {lg["rel_vol"]:.2f}×、廣度 {lg["breadth"]:.0f}%——追價要小心。')
+               f'相對量能 {lg["rel_vol"]:.2f}×、{_bd_txt(lg)}——追價要小心。')
     out.append(("up", "偏多" if ok else "偏多（弱）", txt))
 
     # 偏空：名次最後，量能決定賣壓真不真
     wk = max(S, key=lambda z: z["rank"])
     bot_stock = wk["stocks"][-1]
     heavy = wk["rel_vol"] >= 1.0
-    txt = (f'<b>{html.escape(wk["sector"])}</b> 1W {wk["ret"]["1W"]:+.1f}%、廣度 {wk["breadth"]:.0f}%、'
+    txt = (f'<b>{html.escape(wk["sector"])}</b> 1W {wk["ret"]["1W"]:+.1f}%、{_bd_txt(wk)}、'
            f'相對量能 {wk["rel_vol"]:.2f}×'
            + ("，<b>跌得有量</b>，賣壓是真的。" if heavy else "，量縮陰跌，反彈也沒力。"))
     if wk["d_rank"] <= -2:
@@ -566,7 +680,7 @@ def read_out():
 
     # 留意：當日最值得警戒的一件事
     fake = [s for s in S if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85]
-    narrow = [s for s in S if s["ret"]["1W"] > 2 and s["breadth"] <= 40]
+    narrow = [s for s in S if not s.get("single") and s["ret"]["1W"] > 2 and s["breadth"] <= 40]
     jump = [s for s in S if abs(s["d_rank"]) >= 3]
     best_o = max(OTHERS, key=lambda z: z["ret"]["1W"]) if OTHERS else None
     if fake:
@@ -591,6 +705,29 @@ def read_out():
     out.append(("warn", "留意", note))
     return out
 
+H = D.get("health", {})
+
+def health_badge():
+    """資料品質一行。正常時只顯示來源，異常時直接講哪裡不對。"""
+    if not H:
+        return ""
+    bad = []
+    if H.get("both_stale"):
+        bad.append("兩個來源都沒有最新收盤")
+    if H.get("swapped"):
+        bad.append(f'Yahoo 落後 {len(H["swapped"])} 檔，已改用備援')
+    if H.get("mismatch"):
+        bad.append(f'{len(H["mismatch"])} 檔兩邊價格不一致')
+    if H.get("alt_ok", 0) < H.get("alt_expected", 1) * 0.8:
+        bad.append(f'備援只回 {H["alt_ok"]}/{H["alt_expected"]} 檔，對帳不完整')
+    if bad:
+        return (f'<div class="meta warnbar" title="{html.escape(json.dumps(H, ensure_ascii=False))}">'
+                f'⚠ {html.escape("；".join(bad))}</div>')
+    return (f'<div class="meta dim">雙來源對帳一致 · Yahoo + stockanalysis '
+            f'{H.get("alt_ok", 0)}/{H.get("alt_expected", 0)} 檔</div>')
+
+HEALTH_BAR = health_badge()
+
 DIGEST = "".join(f'<li class="dg {t}"><span class="dtag">{tag}</span><span>{txt}</span></li>'
                  for t, tag, txt in read_out())
 
@@ -607,9 +744,9 @@ KPIS = "".join([
         f'費半 {B["^SOX"]["ret"]["1W"]:+.2f}% · SPY {B["SPY"]["ret"]["1W"]:+.2f}%',
         "up" if C["ret"]["1W"] >= 0 else "down"),
     kpi("最強板塊", html.escape(top["sector"]),
-        f'1W {top["ret"]["1W"]:+.2f}% · 廣度 {top["breadth"]:.0f}%', "up"),
+        f'1W {top["ret"]["1W"]:+.2f}% · {_bd_txt(top)}', "up"),
     kpi("最弱板塊", html.escape(bot["sector"]),
-        f'1W {bot["ret"]["1W"]:+.2f}% · 廣度 {bot["breadth"]:.0f}%', "down"),
+        f'1W {bot["ret"]["1W"]:+.2f}% · {_bd_txt(bot)}', "down"),
     kpi("量能最集中", html.escape(hivol["sector"]),
         f'相對量能 {hivol["rel_vol"]:.2f}× · 1W {hivol["ret"]["1W"]:+.2f}%', "up"),
 ])
@@ -699,6 +836,7 @@ tr.comp td{border-bottom:1px solid var(--rule)}
 .chip{display:inline-block;padding:1px 6px;border-radius:5px;background:var(--chipbg);font-size:11.5px}
 .chip.hot{background:rgba(250,178,25,.22);color:var(--ink-1)}
 .chip.cold{background:rgba(57,135,229,.18);color:var(--ink-1)}
+.warnbar{color:#ffb454;border:1px solid #6b4a12;background:#2a1d08;border-radius:6px;padding:4px 8px;margin-top:6px;display:inline-block}
 .sblock{background:var(--surf);border:1px solid var(--ring);border-radius:11px;margin-bottom:7px;
  overflow:hidden}
 .sblock summary{padding:9px 14px;cursor:pointer;font-weight:590;display:flex;align-items:baseline;
@@ -738,6 +876,7 @@ HTML = f"""<!DOCTYPE html>
 <style>{CSS}</style></head><body><div class="wrap">
 <header><h1>美股半導體板塊資金輪動</h1>
   <div class="meta">資料日 {D["asof"]}（美股收盤）</div>
+  {HEALTH_BAR}
 </header>
 
 <div class="hero"><h2>方向判讀 <span class="hnote">規則判讀，非投資建議</span></h2>
@@ -793,3 +932,11 @@ print("column check OK")
 open(OUT_HTML, "w").write(HTML)
 json.dump(D, open(OUT_JSON, "w"), ensure_ascii=False)
 print("ASOF", D["asof"], "| failed:", D["failed"], "| bytes", len(HTML))
+_h = D.get("health", {})
+print("HEALTH_SUMMARY", json.dumps({k: _h.get(k) for k in
+      ("consensus", "alt_ok", "alt_expected", "swapped", "mismatch", "both_stale")},
+      ensure_ascii=False))
+if _h.get("both_stale"):
+    print("::warning title=雙來源皆過期::兩個來源都沒有最新收盤，資料可能沒前進")
+if _h.get("swapped"):
+    print(f'::warning title=Yahoo 落後::已用 stockanalysis 補 {len(_h["swapped"])} 檔：{",".join(_h["swapped"][:15])}')
