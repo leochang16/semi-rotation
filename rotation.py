@@ -137,6 +137,34 @@ def fetch_sa(tk):
             last = e
     raise last
 
+# ---------------------------------------------------------------- 幣的補洞來源
+# Yahoo 的加密日線會出現整根 null（實測 2026-09-15 的 BTC/ETH close/volume 全空），
+# 被 dropna 清掉後就成了資料洞，ffill 會造出「1D 0.00%」這種假平盤。
+# CoinGecko 免金鑰、有那幾天。注意時間戳慣例差一天：CoinGecko 標在 D 00:00 的快照
+# ＝ Yahoo 標在 D-1 那根的收盤（實測 shift=-1 中位差 0.016%，其他偏移差 >1%）。
+CG_ID = {"BTC-USD": "bitcoin", "ETH-USD": "ethereum"}
+
+def fetch_cg(tk):
+    cid = CG_ID[tk]
+    hdr = dict(UA); hdr["Accept"] = "application/json"
+    u = (f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart"
+         f"?vs_currency=usd&days=365&interval=daily")
+    d = json.loads(urllib.request.urlopen(
+        urllib.request.Request(u, headers=hdr), timeout=30).read())
+    px, vl = {}, {}
+    for (ts, p), (_, v) in zip(d["prices"], d["total_volumes"]):
+        t = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+        if t.hour or t.minute:          # 最後一筆是即時快照，不是日收
+            continue
+        day = pd.Timestamp((t - timedelta(days=1)).date())
+        px[day], vl[day] = p, v
+    if not px:
+        raise ValueError("CoinGecko 無資料")
+    out = pd.DataFrame({"close": pd.Series(px), "volume": pd.Series(vl)}).sort_index()
+    out["adj"] = out["close"]
+    out["name"] = tk
+    return out
+
 def fetch_shares(op, crumb, tickers):
     out = {}
     for i in range(0, len(tickers), 25):
@@ -196,6 +224,25 @@ def build():
         except Exception as e:
             failed.append(tk); print("FAIL", tk, e, file=sys.stderr)
         time.sleep(0.25)
+    # 先把幣的資料洞補起來，再做任何計算
+    cg_filled = {}
+    for tk in COIN_TK:
+        if tk not in charts:
+            continue
+        try:
+            g = fetch_cg(tk)
+        except Exception as e:
+            print("CG FAIL", tk, e, file=sys.stderr)
+            continue
+        y = charts[tk]
+        miss = [d for d in g.index if d not in y.index and d >= y.index[0] and d <= g.index[-1]]
+        if miss:
+            add = g.loc[miss, ["close", "adj", "volume"]].copy()
+            add["name"] = y["name"].iloc[0]
+            charts[tk] = pd.concat([y, add]).sort_index()
+            cg_filled[tk] = [str(d.date()) for d in miss]
+        time.sleep(2.5)
+
     info = fetch_shares(op, crumb, [t for t in ALL_TICKERS if t in charts])
 
     # ---------------------------------------------------------- 雙來源對帳
@@ -248,6 +295,7 @@ def build():
         "swapped": sorted(swapped),
         "mismatch": mismatch,
         "both_stale": bool(set(y_stale) & set(a_stale)),
+        "cg_filled": cg_filled,
     }
     print("HEALTH " + json.dumps(health, ensure_ascii=False), file=sys.stderr)
 
@@ -257,13 +305,20 @@ def build():
     # 幣是 365 天、股票 252 天。若不對齊，所有 N 日窗口的意義會被幣的週末 bar 扭曲。
     # 統一 reindex 到 SPY 的美股交易日曆：幣的週一 1D ＝ 週五收盤→週一收盤（本來就含週末）。
     cal = charts["SPY"].index.sort_values()
-    # 成交額先在原始日曆上算，再把幣的週末量併進下一個交易日，否則週一量被低估
-    _dv = (raw.sort_index() * vol.sort_index()).sort_index()
+    # 成交額。股票的 volume 是股數，要乘價格；幣的 volume 本來就是美元，不能再乘。
+    _px = raw.sort_index().copy()
+    for _t in COIN_TK:
+        if _t in _px.columns:
+            _px[_t] = 1.0
+    _dv = (_px * vol.sort_index()).sort_index()
+    # 幣的週末量併進下一個交易日，否則週一量被低估。min_count=1：整組無資料要是
+    # NaN 不是 0，否則 Yahoo 漏一根 bar 會被當成「今天零成交」，相對量能變 0.00×。
     _pos = cal.searchsorted(_dv.index, side="left")
     _keep = _pos < len(cal)
-    dv = _dv[_keep].groupby(cal[_pos[_keep]]).sum().reindex(cal)
-    adj = adj.sort_index().ffill(limit=3).reindex(cal)
-    raw = raw.sort_index().ffill(limit=3).reindex(cal)
+    dv = (_dv[_keep].groupby(cal[_pos[_keep]]).sum(min_count=1)
+          .reindex(cal).ffill(limit=3))
+    adj = adj.sort_index().reindex(cal.union(adj.index)).ffill(limit=3).reindex(cal)
+    raw = raw.sort_index().reindex(cal.union(raw.index)).ffill(limit=3).reindex(cal)
     ret = adj.pct_change()
 
     dates = adj.index
@@ -428,9 +483,14 @@ def add_rel_vol(rows):
     會主導分母，別的板塊即使量沒變也會被動位移。相對量能是絕對量的比值，又用全表
     平均校正掉「大盤整體放量」的日子。
     """
-    m = sum(s["vol_ratio"] for s in rows) / max(len(rows), 1)
+    ok = [s["vol_ratio"] for s in rows
+          if s["vol_ratio"] == s["vol_ratio"] and s["vol_ratio"] > 0]   # 排除 NaN / 0
+    m = sum(ok) / len(ok) if ok else 0.0
     for s in rows:
-        s["rel_vol"] = s["vol_ratio"] / m if m else 1.0
+        v = s["vol_ratio"]
+        good = (v == v) and v > 0 and m > 0
+        s["rel_vol"] = v / m if good else float("nan")
+        s["vol_ok"] = bool(good)
     return rows
 
 add_rel_vol(S)
@@ -477,10 +537,11 @@ def money(v):
 def signals(s):
     """該板塊當天的重點，做成短標籤。最多 3 個，最重要的在前。"""
     out = []
-    if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85:
+    vok = s.get("vol_ok", True)
+    if vok and s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85:
         out.append(("warn", "縮量",
                     f'漲 {s["ret"]["1W"]:+.1f}% 但相對量能只有 {s["rel_vol"]:.2f}×，沒有增量資金'))
-    if s["rel_vol"] >= 1.3:
+    if vok and s["rel_vol"] >= 1.3:
         out.append(("up", "爆量",
                     f'相對量能 {s["rel_vol"]:.2f}×（自身量能 {s["vol_ratio"]:.2f}× 對比全表平均）'))
     solo = bool(s.get("single"))          # 單一資產：廣度/離散度無意義，相關標籤全部不發
@@ -586,8 +647,11 @@ def sector_rows(rows):
         for k in W4:
             r.append(cell(s["ret"][k], sc[k], "{:+.2f}", "%"))
         rv = s["rel_vol"]
-        r.append(f'<td class="num sep"><span class="chip {"hot" if rv>=1.3 else ("cold" if rv<=0.7 else "")}">'
-                 f'{rv:.2f}×</span></td>')
+        if not s.get("vol_ok", True):
+            r.append('<td class="num sep dim" title="來源今天沒有成交量資料">—</td>')
+        else:
+            r.append(f'<td class="num sep"><span class="chip {"hot" if rv>=1.3 else ("cold" if rv<=0.7 else "")}">'
+                     f'{rv:.2f}×</span></td>')
         bd = s["breadth"]
         if s.get("single"):
             r.append('<td class="num sep dim" title="單一資產，沒有成分股廣度可言">—</td>')
@@ -626,7 +690,8 @@ def stock_blocks(rows, tier):
             f'<details class="sblock"><summary><span class="srk">{tier}#{s["rank"]}</span>'
             f'{html.escape(s["sector"])}<span class="ssum">1W {s["ret"]["1W"]:+.2f}% · '
             + ("" if s.get("single") else f'廣度 {s["breadth"]:.0f}% · ')
-            + f'相對量能 {s["rel_vol"]:.2f}×</span></summary>'
+            + (f'相對量能 {s["rel_vol"]:.2f}×' if s.get("vol_ok", True) else '量能 —')
+            + '</span></summary>'
             f'<div class="tw"><table class="stk"><thead><tr><th>代號</th><th>名稱</th>'
             f'<th class="num" title="20 日平均成交金額——這檔能吃多少量不滑價">20日均額</th>'
             f'<th class="num">1D</th><th class="num">3D</th><th class="num">1W</th>'
@@ -653,17 +718,19 @@ def read_out():
     out = []
 
     # 偏多：名次最前、且有量能與廣度確認
-    longs = [s for s in S if s["rel_vol"] >= 1.0 and _bd_ok(s)]
+    longs = [s for s in S if s.get("vol_ok", True) and s["rel_vol"] >= 1.0 and _bd_ok(s)]
     lg = min(longs, key=lambda z: z["rank"]) if longs else min(S, key=lambda z: z["rank"])
-    ok = lg["rel_vol"] >= 1.0 and _bd_ok(lg)
+    ok = lg.get("vol_ok", True) and lg["rel_vol"] >= 1.0 and _bd_ok(lg)
     tp = lg["stocks"][0]
     if ok:
         txt = (f'<b>{html.escape(lg["sector"])}</b> 三個條件都成立：1W {lg["ret"]["1W"]:+.1f}%、'
-               f'相對量能 {lg["rel_vol"]:.2f}×、{_bd_txt(lg)}。'
+               + (f'相對量能 {lg["rel_vol"]:.2f}×、' if lg.get("vol_ok", True) else '量能 —、')
+               + f'{_bd_txt(lg)}。'
                f'領頭 {tp["ticker"]} {tp["r5"]:+.1f}%。')
     else:
         txt = (f'<b>{html.escape(lg["sector"])}</b> 名次第一但確認不足：'
-               f'相對量能 {lg["rel_vol"]:.2f}×、{_bd_txt(lg)}——追價要小心。')
+               + (f'相對量能 {lg["rel_vol"]:.2f}×、' if lg.get("vol_ok", True) else '量能 —、')
+               + f'{_bd_txt(lg)}——追價要小心。')
     out.append(("up", "偏多" if ok else "偏多（弱）", txt))
 
     # 偏空：名次最後，量能決定賣壓真不真
@@ -671,7 +738,7 @@ def read_out():
     bot_stock = wk["stocks"][-1]
     heavy = wk["rel_vol"] >= 1.0
     txt = (f'<b>{html.escape(wk["sector"])}</b> 1W {wk["ret"]["1W"]:+.1f}%、{_bd_txt(wk)}、'
-           f'相對量能 {wk["rel_vol"]:.2f}×'
+           + (f'相對量能 {wk["rel_vol"]:.2f}×' if wk.get("vol_ok", True) else '量能資料缺漏')
            + ("，<b>跌得有量</b>，賣壓是真的。" if heavy else "，量縮陰跌，反彈也沒力。"))
     if wk["d_rank"] <= -2:
         txt += f' 3 日內 {wk["rank_prev"]} → {wk["rank"]} 名。'
@@ -679,7 +746,8 @@ def read_out():
     out.append(("down", "偏空", txt))
 
     # 留意：當日最值得警戒的一件事
-    fake = [s for s in S if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85]
+    SV = [s for s in S if s.get("vol_ok", True)]            # 量能有效的列
+    fake = [s for s in SV if s["ret"]["1W"] > 2 and s["rel_vol"] <= 0.85]
     narrow = [s for s in S if not s.get("single") and s["ret"]["1W"] > 2 and s["breadth"] <= 40]
     jump = [s for s in S if abs(s["d_rank"]) >= 3]
     best_o = max(OTHERS, key=lambda z: z["ret"]["1W"]) if OTHERS else None
@@ -694,12 +762,13 @@ def read_out():
     elif jump:
         j = max(jump, key=lambda z: abs(z["d_rank"]))
         note = (f'<b>{html.escape(j["sector"])}</b> 3 日內 {j["rank_prev"]} → {j["rank"]} 名，'
-                f'相對量能 {j["rel_vol"]:.2f}×——輪動剛換手。')
+                + (f'相對量能 {j["rel_vol"]:.2f}×——輪動剛換手。'
+                   if j.get("vol_ok", True) else '量能資料缺漏——輪動剛換手。'))
     elif best_o and best_o["ret"]["1W"] > C["ret"]["1W"]:
         note = (f'<b>{html.escape(best_o["sector"])}</b>（其他 AI）1W {best_o["ret"]["1W"]:+.1f}%，'
                 f'比半導體整體 {C["ret"]["1W"]:+.1f}% 強——題材重心不在半導體這邊。')
     else:
-        hv = max(S, key=lambda z: z["rel_vol"])
+        hv = max(SV, key=lambda z: z["rel_vol"]) if SV else S[0]
         note = (f'<b>{html.escape(hv["sector"])}</b> 相對量能 {hv["rel_vol"]:.2f}× 全表最高，'
                 f'1W {hv["ret"]["1W"]:+.1f}%——量先到，價還沒走完。')
     out.append(("warn", "留意", note))
@@ -716,6 +785,9 @@ def health_badge():
         bad.append("兩個來源都沒有最新收盤")
     if H.get("swapped"):
         bad.append(f'Yahoo 落後 {len(H["swapped"])} 檔，已改用備援')
+    if H.get("cg_filled"):
+        n = sum(len(v) for v in H["cg_filled"].values())
+        bad.append(f'Yahoo 幣資料缺 {n} 天，已用 CoinGecko 補')
     if H.get("mismatch"):
         bad.append(f'{len(H["mismatch"])} 檔兩邊價格不一致')
     if H.get("alt_ok", 0) < H.get("alt_expected", 1) * 0.8:
@@ -733,7 +805,8 @@ DIGEST = "".join(f'<li class="dg {t}"><span class="dtag">{tag}</span><span>{txt}
 
 # ---------------------------------------------------------------- KPIs
 top, bot = min(S, key=lambda z: z["rank"]), max(S, key=lambda z: z["rank"])
-hivol = max(S, key=lambda z: z["rel_vol"])
+_SV = [s for s in S if s.get("vol_ok", True)]
+hivol = max(_SV, key=lambda z: z["rel_vol"]) if _SV else S[0]
 
 def kpi(lbl, val, sub, tone=""):
     return (f'<div class="kpi"><div class="klbl">{lbl}</div><div class="kval {tone}">{val}</div>'
